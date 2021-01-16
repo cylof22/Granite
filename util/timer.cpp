@@ -1,4 +1,4 @@
-/* Copyright (c) 2017 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2020 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -21,11 +21,15 @@
  */
 
 #include "timer.hpp"
-#include <chrono>
 
-using namespace std;
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#else
+#include <time.h>
+#endif
 
-namespace Granite
+namespace Util
 {
 FrameTimer::FrameTimer()
 {
@@ -77,8 +81,46 @@ double FrameTimer::get_elapsed() const
 
 int64_t FrameTimer::get_time()
 {
-	auto current = chrono::steady_clock::now().time_since_epoch();
-	auto nsecs = chrono::duration_cast<chrono::nanoseconds>(current);
-	return nsecs.count();
+	return get_current_time_nsecs();
+}
+
+#ifdef _WIN32
+struct QPCFreq
+{
+	QPCFreq()
+	{
+		LARGE_INTEGER freq;
+		QueryPerformanceFrequency(&freq);
+		inv_freq = 1e9 / double(freq.QuadPart);
+	}
+
+	double inv_freq;
+} static static_qpc_freq;
+#endif
+
+int64_t get_current_time_nsecs()
+{
+#ifdef _WIN32
+	LARGE_INTEGER li;
+	if (!QueryPerformanceCounter(&li))
+		return 0;
+	return int64_t(double(li.QuadPart) * static_qpc_freq.inv_freq);
+#else
+	struct timespec ts = {};
+	if (clock_gettime(CLOCK_MONOTONIC, &ts) < 0)
+		return 0;
+	return ts.tv_sec * 1000000000ll + ts.tv_nsec;
+#endif
+}
+
+void Timer::start()
+{
+	t = get_current_time_nsecs();
+}
+
+double Timer::end()
+{
+	auto nt = get_current_time_nsecs();
+	return double(nt - t) * 1e-9;
 }
 }

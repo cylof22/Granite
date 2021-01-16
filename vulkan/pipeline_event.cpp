@@ -1,4 +1,4 @@
-/* Copyright (c) 2017 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2020 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -28,6 +28,16 @@ namespace Vulkan
 EventHolder::~EventHolder()
 {
 	if (event)
-		device->destroy_event(event);
+	{
+		if (internal_sync)
+			device->destroy_event_nolock(event);
+		else
+			device->destroy_event(event);
+	}
+}
+
+void EventHolderDeleter::operator()(Vulkan::EventHolder *event)
+{
+	event->device->handle_pool.events.free(event);
 }
 }

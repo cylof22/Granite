@@ -1,9 +1,12 @@
 #include "math.hpp"
-#include "gli/save.hpp"
-#include "gli/texture2d.hpp"
-#include "util.hpp"
+#include "logging.hpp"
+#include "muglm/matrix_helper.hpp"
+#include "muglm/muglm_impl.hpp"
+#include "memory_mapped_texture.hpp"
 
-using namespace glm;
+using namespace muglm;
+using namespace Granite;
+using namespace Granite::SceneFormats;
 
 // Shameless copy-pasta from learnopengl.com. :)
 
@@ -19,7 +22,7 @@ static float RadicalInverse_VdC(uint32_t bits)
 
 static vec2 Hammersley(uint i, uint N)
 {
-	return vec2(float(i)/float(N), RadicalInverse_VdC(i));
+	return vec2(float(i) / float(N), RadicalInverse_VdC(i));
 }
 
 static vec3 ImportanceSampleGGX(vec2 Xi, vec3 N, float roughness)
@@ -27,8 +30,8 @@ static vec3 ImportanceSampleGGX(vec2 Xi, vec3 N, float roughness)
 	float a = roughness * roughness;
 
 	float phi = 2.0f * pi<float>() * Xi.x;
-	float cosTheta = sqrt((1.0f - Xi.y) / (1.0f + (a * a - 1.0f) * Xi.y));
-	float sinTheta = sqrt(1.0f - cosTheta * cosTheta);
+	float cosTheta = muglm::sqrt((1.0f - Xi.y) / (1.0f + (a * a - 1.0f) * Xi.y));
+	float sinTheta = muglm::sqrt(1.0f - cosTheta * cosTheta);
 
 	// from spherical coordinates to cartesian coordinates
 	vec3 H;
@@ -69,7 +72,7 @@ static float GeometrySmith(vec3 N, vec3 V, vec3 L, float roughness)
 static vec2 IntegrateBRDF(float NdotV, float roughness)
 {
 	vec3 V;
-	V.x = sqrt(1.0f - NdotV * NdotV);
+	V.x = muglm::sqrt(1.0f - NdotV * NdotV);
 	V.y = 0.0f;
 	V.z = NdotV;
 
@@ -108,28 +111,29 @@ int main(int argc, char *argv[])
 {
 	if (argc != 2)
 	{
-		LOGE("Usage: %s <output.ktx>\n", argv[0]);
+		LOGE("Usage: %s <output.gtx>\n", argv[0]);
 		return 1;
 	}
 
-	const int width = 256;
-	const int height = 256;
-	gli::texture2d tex(gli::FORMAT_RG16_SFLOAT_PACK16, gli::extent2d(width, height), 1);
+	const unsigned width = 256;
+	const unsigned height = 256;
 
-	for (int y = 0; y < width; y++)
+	MemoryMappedTexture tex;
+	tex.set_2d(VK_FORMAT_R16G16_SFLOAT, width, height);
+	if (!tex.map_write(argv[1]))
 	{
-		for (int x = 0; x < height; x++)
+		LOGE("Failed to save image to: %s\n", argv[1]);
+		return 1;
+	}
+
+	for (unsigned y = 0; y < height; y++)
+	{
+		for (unsigned x = 0; x < width; x++)
 		{
 			float NoV = (x + 0.5f) * (1.0f / width);
 			float roughness = (y + 0.5f) * (1.0f / height);
 			//roughness = roughness * 0.75f + 0.25f;
-			tex.store<uint32_t>({x, y}, 0, packHalf2x16(IntegrateBRDF(NoV, roughness)));
+			*tex.get_layout().data_2d<u16vec2>(x, y) = floatToHalf(IntegrateBRDF(NoV, roughness));
 		}
-	}
-
-	if (!gli::save(tex, argv[1]))
-	{
-		LOGE("Failed to save image to: %s\n", argv[1]);
-		return 1;
 	}
 }

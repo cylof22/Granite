@@ -1,4 +1,4 @@
-/* Copyright (c) 2017 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2020 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -26,7 +26,17 @@
 
 namespace Granite
 {
-Vulkan::ImageHandle convert_equirect_to_cube(Vulkan::Device &device, Vulkan::ImageView &view);
+Vulkan::ImageHandle convert_equirect_to_cube(Vulkan::Device &device, Vulkan::ImageView &view, float scale);
 Vulkan::ImageHandle convert_cube_to_ibl_diffuse(Vulkan::Device &device, Vulkan::ImageView &view);
 Vulkan::ImageHandle convert_cube_to_ibl_specular(Vulkan::Device &device, Vulkan::ImageView &view);
+
+struct ImageReadback
+{
+	Vulkan::Fence fence;
+	Vulkan::BufferHandle buffer;
+	Vulkan::ImageCreateInfo create_info;
+	Vulkan::TextureFormatLayout layout;
+};
+ImageReadback save_image_to_cpu_buffer(Vulkan::Device &device, const Vulkan::Image &image, Vulkan::CommandBuffer::Type type);
+bool save_image_buffer_to_gtx(Vulkan::Device &device, ImageReadback &readback, const char *path);
 }

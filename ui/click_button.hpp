@@ -1,4 +1,4 @@
-/* Copyright (c) 2017 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2020 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -24,6 +24,7 @@
 
 #include "widget.hpp"
 #include "font.hpp"
+#include "ui_manager.hpp"
 #include <functional>
 
 namespace Granite
@@ -39,20 +40,22 @@ public:
 		return text;
 	}
 
-	void set_label_alignment(Font::Alignment alignment)
+	void set_label_alignment(Font::Alignment alignment_)
 	{
-		this->alignment = alignment;
+		alignment = alignment_;
 	}
 
-	void set_font_color(vec4 color)
+	void set_font_color(vec4 color_)
 	{
-		this->color = color;
+		color = color_;
 	}
 
 	void on_click(std::function<void ()> cb)
 	{
 		click_cb = std::move(cb);
 	}
+
+	void set_font_size(FontSize size);
 
 private:
 	void reconfigure() override;
@@ -67,6 +70,7 @@ private:
 
 	bool click_held = false;
 	std::function<void ()> click_cb;
+	FontSize font_size = FontSize::Small;
 };
 }
 }

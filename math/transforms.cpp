@@ -1,4 +1,4 @@
-/* Copyright (c) 2017 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2020 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -22,6 +22,9 @@
 
 #include "transforms.hpp"
 #include "aabb.hpp"
+#include "simd.hpp"
+#include "muglm/matrix_helper.hpp"
+#include <assert.h>
 
 namespace Granite
 {
@@ -43,7 +46,7 @@ bool compute_plane_reflection(mat4 &projection, mat4 &view, vec3 camera_pos, vec
 	vec3 look_pos_x = normalize(cross(normal, look_up));
 	look_up = normalize(cross(look_pos_x, normal));
 
-	view = mat4_cast(look_at(normal, look_up)) * glm::translate(-camera_pos);
+	view = mat4_cast(look_at(normal, look_up)) * translate(-camera_pos);
 
 	float dist_x = dot(look_pos_x, center - camera_pos);
 	float left = dist_x - radius_other;
@@ -54,7 +57,7 @@ bool compute_plane_reflection(mat4 &projection, mat4 &view, vec3 camera_pos, vec
 	float top = dist_y + radius_up;
 
 	z_near = over_plane;
-	projection = glm::scale(vec3(1.0f, -1.0f, 1.0f)) * glm::frustum(left, right, bottom, top, over_plane, z_far);
+	projection = frustum(left, right, bottom, top, over_plane, z_far);
 	if (z_near >= z_far)
 		return false;
 	return true;
@@ -78,7 +81,7 @@ bool compute_plane_refraction(mat4 &projection, mat4 &view, vec3 camera_pos, vec
 	vec3 look_pos_x = normalize(cross(normal, look_up));
 	look_up = normalize(cross(look_pos_x, normal));
 
-	view = mat4_cast(look_at(normal, look_up)) * glm::translate(-camera_pos);
+	view = mat4_cast(look_at(normal, look_up)) * translate(-camera_pos);
 
 	float dist_x = dot(look_pos_x, center - camera_pos);
 	float left = dist_x - radius_other;
@@ -89,20 +92,18 @@ bool compute_plane_refraction(mat4 &projection, mat4 &view, vec3 camera_pos, vec
 	float top = dist_y + radius_up;
 
 	z_near = over_plane;
-	projection = glm::scale(vec3(1.0f, -1.0f, 1.0f)) * glm::frustum(left, right, bottom, top, over_plane, z_far);
+	projection = frustum(left, right, bottom, top, over_plane, z_far);
 	if (z_near >= z_far)
 		return false;
 	return true;
 }
 
-void compute_model_transform(mat4 &world, vec3 scale, quat rotation, vec3 translation, const mat4 &parent)
+void compute_model_transform(mat4 &world, vec3 s, quat rot, vec3 trans, const mat4 &parent)
 {
-	mat4 S = glm::scale(scale);
-	mat4 R = mat4_cast(rotation);
-	mat4 T = glm::translate(translation);
-
-	mat4 model = R * S;
-	world = parent * T * model;
+	mat4 model;
+	model[3] = vec4(trans, 1.0f);
+	SIMD::convert_quaternion_with_scale(&model[0], rot, s);
+	SIMD::mul(world, parent, model);
 }
 
 void compute_normal_transform(mat4 &normal, const mat4 &world)
@@ -168,9 +169,14 @@ quat look_at(vec3 direction, vec3 up)
 	return up_transform * look_transform;
 }
 
+quat look_at_arbitrary_up(vec3 direction)
+{
+	return rotate_vector(normalize(direction), vec3(0.0f, 0.0f, -1.0f));
+}
+
 mat4 projection(float fovy, float aspect, float znear, float zfar)
 {
-	return glm::scale(vec3(1.0f, -1.0f, 1.0f)) * glm::perspective(fovy, aspect, znear, zfar);
+	return perspective(fovy, aspect, znear, zfar);
 }
 
 mat4 ortho(const AABB &aabb)
@@ -183,25 +189,52 @@ mat4 ortho(const AABB &aabb)
 	max.z = -max.z;
 	min.z = -min.z;
 
-	return glm::scale(vec3(1.0f, -1.0f, 1.0f)) * glm::ortho(min.x, max.x, min.y, max.y, min.z, max.z);
+	return muglm::ortho(min.x, max.x, min.y, max.y, min.z, max.z);
 }
 
-vec3 LinearSampler::sample(unsigned index, float l) const
+void compute_cube_render_transform(vec3 center, unsigned face, mat4 &proj, mat4 &view, float znear, float zfar)
+{
+	static const vec3 dirs[6] = {
+		vec3(1.0f, 0.0f, 0.0f),
+		vec3(-1.0f, 0.0f, 0.0f),
+		vec3(0.0f, 1.0f, 0.0f),
+		vec3(0.0f, -1.0f, 0.0f),
+		vec3(0.0f, 0.0f, 1.0f),
+		vec3(0.0f, 0.0f, -1.0f),
+	};
+
+	static const vec3 ups[6] = {
+		vec3(0.0f, 1.0f, 0.0f),
+		vec3(0.0f, 1.0f, 0.0f),
+		vec3(0.0f, 0.0f, -1.0f),
+		vec3(0.0f, 0.0f, +1.0f),
+		vec3(0.0f, 1.0f, 0.0f),
+		vec3(0.0f, 1.0f, 0.0f),
+	};
+
+	view = mat4_cast(look_at(dirs[face], ups[face])) * translate(-center);
+	proj = scale(vec3(-1.0f, 1.0f, 1.0f)) * projection(0.5f * pi<float>(), 1.0f, znear, zfar);
+}
+
+vec3 LinearSampler::sample(unsigned index, float l, float) const
 {
 	if (l == 0.0f)
 		return values[index];
+	assert(index + 1 < values.size());
 	return mix(values[index], values[index + 1], l);
 }
 
-quat SlerpSampler::sample(unsigned index, float l) const
+quat SlerpSampler::sample(unsigned index, float l, float) const
 {
 	if (l == 0.0f)
 		return values[index];
+	assert(index + 1 < values.size());
 	return slerp(values[index], values[index + 1], l);
 }
 
 vec3 CubicSampler::sample(unsigned index, float t, float dt) const
 {
+	assert(index + 1 < values.size());
 	vec3 p0 = values[3 * index + 1];
 	vec3 m0 = dt * values[3 * index + 2];
 	vec3 m1 = dt * values[3 * index + 3];

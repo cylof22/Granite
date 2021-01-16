@@ -1,4 +1,4 @@
-/* Copyright (c) 2017 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2020 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -21,50 +21,41 @@
  */
 
 #include "fence_manager.hpp"
+#include "device.hpp"
 
 namespace Vulkan
 {
-FenceManager::FenceManager(VkDevice device)
-    : device(device)
+void FenceManager::init(Device *device_)
 {
+	device = device_;
+	table = &device->get_device_table();
 }
 
 VkFence FenceManager::request_cleared_fence()
 {
-	if (index < fences.size())
+	if (!fences.empty())
 	{
-		return fences[index++];
+		auto ret = fences.back();
+		fences.pop_back();
+		return ret;
 	}
 	else
 	{
 		VkFence fence;
 		VkFenceCreateInfo info = { VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
-		vkCreateFence(device, &info, nullptr, &fence);
-		fences.push_back(fence);
-		index++;
+		table->vkCreateFence(device->get_device(), &info, nullptr, &fence);
 		return fence;
 	}
 }
 
-void FenceManager::begin()
+void FenceManager::recycle_fence(VkFence fence)
 {
-	if (index)
-	{
-		vkWaitForFences(device, index, fences.data(), true, UINT64_MAX);
-		vkResetFences(device, index, fences.data());
-	}
-	index = 0;
+	fences.push_back(fence);
 }
 
 FenceManager::~FenceManager()
 {
-	if (index)
-	{
-		vkWaitForFences(device, index, fences.data(), true, UINT64_MAX);
-		vkResetFences(device, index, fences.data());
-	}
-
 	for (auto &fence : fences)
-		vkDestroyFence(device, fence, nullptr);
+		table->vkDestroyFence(device->get_device(), fence, nullptr);
 }
 }

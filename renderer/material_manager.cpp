@@ -1,4 +1,4 @@
-/* Copyright (c) 2017 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2020 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -21,43 +21,43 @@
  */
 
 #include "material_manager.hpp"
-#include "vulkan_events.hpp"
+#include "application_wsi_events.hpp"
 #include <string.h>
-
-#define RAPIDJSON_ASSERT(x) do { if (!(x)) throw "JSON error"; } while(0)
-#include "rapidjson/document.h"
-#include "../importers/importers.hpp"
+#include "rapidjson_wrapper.hpp"
+#include "scene_formats.hpp"
 
 using namespace std;
 using namespace Vulkan;
 using namespace rapidjson;
 using namespace Util;
-using namespace Granite::Importer;
+using namespace Granite::SceneFormats;
 
 namespace Granite
 {
-MaterialFile::MaterialFile(const std::string &path)
-	: VolatileSource(path)
+MaterialFile::MaterialFile(const std::string &path_)
+	: VolatileSource(path_)
 {
-	init();
+	if (!init())
+		throw runtime_error("Failed to load material file.");
 
 	EVENT_MANAGER_REGISTER_LATCH(MaterialFile, on_device_created, on_device_destroyed, DeviceCreatedEvent);
 }
 
 MaterialFile::MaterialFile(const MaterialInfo &info)
 {
-	paths[ecast(Material::Textures::BaseColor)] = info.base_color;
-	paths[ecast(Material::Textures::Normal)] = info.normal;
-	paths[ecast(Material::Textures::MetallicRoughness)] = info.metallic_roughness;
-	paths[ecast(Material::Textures::Occlusion)] = info.occlusion;
-	paths[ecast(Material::Textures::Emissive)] = info.emissive;
+	paths[ecast(Material::Textures::BaseColor)] = info.base_color.path;
+	paths[ecast(Material::Textures::Normal)] = info.normal.path;
+	paths[ecast(Material::Textures::MetallicRoughness)] = info.metallic_roughness.path;
+	paths[ecast(Material::Textures::Occlusion)] = info.occlusion.path;
+	paths[ecast(Material::Textures::Emissive)] = info.emissive.path;
+
 	base_color = info.uniform_base_color;
 	emissive = info.uniform_emissive_color;
 	metallic = info.uniform_metallic;
 	roughness = info.uniform_roughness;
 	pipeline = info.pipeline;
 	two_sided = info.two_sided;
-	lod_bias = info.lod_bias;
+	shader_variant = info.bandlimited_pixel ? MATERIAL_SHADER_VARIANT_BANDLIMITED_PIXEL_BIT : 0;
 	normal_scale = info.normal_scale;
 	sampler = info.sampler;
 	bake();
@@ -65,8 +65,16 @@ MaterialFile::MaterialFile(const MaterialInfo &info)
 	EVENT_MANAGER_REGISTER_LATCH(MaterialFile, on_device_created, on_device_destroyed, DeviceCreatedEvent);
 }
 
-void MaterialFile::update(const void *data, size_t size)
+void MaterialFile::update(std::unique_ptr<File> file)
 {
+	void *data = file->map();
+	size_t size = file->get_size();
+	if (!data || !size)
+	{
+		LOGE("Failed to map file ...\n");
+		return;
+	}
+
 	try
 	{
 		string json(static_cast<const char *>(data), static_cast<const char *>(data) + size);
@@ -109,31 +117,31 @@ void MaterialFile::update(const void *data, size_t size)
 				paths[ecast(Material::Textures::MetallicRoughness)] = mr.GetString();
 			else if (mr.IsArray())
 			{
-				this->metallic = mr[0].GetFloat();
-				this->roughness = mr[1].GetFloat();
+				metallic = mr[0].GetFloat();
+				roughness = mr[1].GetFloat();
 			}
 			else
 			{
-				this->metallic = 1.0f;
-				this->roughness = 1.0f;
+				metallic = 1.0f;
+				roughness = 1.0f;
 			}
 
-			assert(this->metallic >= 0.0f && this->metallic <= 1.0f);
-			assert(this->roughness >= 0.0f && this->roughness <= 1.0f);
+			assert(metallic >= 0.0f && metallic <= 1.0f);
+			assert(roughness >= 0.0f && roughness <= 1.0f);
 		}
 		else
 		{
-			this->metallic = 1.0f;
-			this->roughness = 1.0f;
+			metallic = 1.0f;
+			roughness = 1.0f;
 		}
 
 		if (mat.HasMember("emissive"))
 		{
-			auto &emissive = mat["emissive"];
-			this->emissive = vec3(emissive[0].GetFloat(), emissive[1].GetFloat(), emissive[2].GetFloat());
+			auto &e = mat["emissive"];
+			emissive = vec3(e[0].GetFloat(), e[1].GetFloat(), e[2].GetFloat());
 		}
 		else
-			this->emissive = vec3(0.0f);
+			emissive = vec3(0.0f);
 	}
 	catch (const char *)
 	{
@@ -192,7 +200,7 @@ MaterialHandle MaterialManager::request_material(const std::string &path)
 	auto itr = materials.find(path);
 	if (itr == end(materials))
 	{
-		auto handle = Util::make_abstract_handle<Material, MaterialFile>(path);
+		auto handle = Util::make_derived_handle<Material, MaterialFile>(path);
 		materials[path] = handle;
 		return handle;
 	}

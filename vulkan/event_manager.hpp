@@ -1,4 +1,4 @@
-/* Copyright (c) 2017 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2020 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -22,22 +22,26 @@
 
 #pragma once
 
-#include "vulkan.hpp"
+#include "vulkan_headers.hpp"
 #include <vector>
 
 namespace Vulkan
 {
+class Device;
 class EventManager
 {
 public:
-	void init(VkDevice device);
+	void init(Device *device);
 	~EventManager();
 
 	VkEvent request_cleared_event();
 	void recycle(VkEvent event);
 
 private:
-	VkDevice device = VK_NULL_HANDLE;
+	Device *device = nullptr;
+	const VolkDeviceTable *table = nullptr;
 	std::vector<VkEvent> events;
+	uint64_t workaround_counter = 0;
+	bool workaround = false;
 };
 }

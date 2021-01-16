@@ -1,4 +1,4 @@
-/* Copyright (c) 2017 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2020 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -31,9 +31,13 @@ enum class RenderableType
 	Skybox,
 	SkyCylinder,
 	Ground,
+	Ocean,
 	Sprite,
 	LineUI,
 	TexturePlane,
+	SpotLight,
+	PointLight,
+	Custom,
 	Count
 };
 
@@ -42,6 +46,7 @@ enum class RendererType
 	GeneralForward,
 	GeneralDeferred,
 	DepthOnly,
+	Flat,
 	External
 };
 }

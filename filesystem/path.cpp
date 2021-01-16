@@ -1,4 +1,4 @@
-/* Copyright (c) 2017 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2020 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -21,8 +21,19 @@
  */
 
 #include "path.hpp"
-#include "util.hpp"
+#include "logging.hpp"
+#include "string_helpers.hpp"
 #include <algorithm>
+
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#else
+#include <unistd.h>
+#ifdef __linux__
+#include <linux/limits.h>
+#endif
+#endif
 
 using namespace std;
 
@@ -30,6 +41,46 @@ namespace Granite
 {
 namespace Path
 {
+string enforce_protocol(const string &path)
+{
+	if (path.empty())
+		return "";
+
+	auto index = path.find("://");
+	if (index == string::npos)
+		return string("file://") + path;
+	else
+		return path;
+}
+
+string canonicalize_path(const string &path)
+{
+	string transformed;
+	transformed.resize(path.size());
+	transform(begin(path), end(path), begin(transformed), [](char c) -> char { return c == '\\' ? '/' : c; });
+	auto data = Util::split_no_empty(transformed, "/");
+
+	vector<string> result;
+	for (auto &i : data)
+	{
+		if (i == "..")
+		{
+			if (!result.empty())
+				result.pop_back();
+		}
+		else if (i != ".")
+			result.push_back(move(i));
+	}
+
+	string res;
+	for (auto &i : result)
+	{
+		if (&i != result.data())
+			res += "/";
+		res += i;
+	}
+	return res;
+}
 
 static size_t find_last_slash(const string &str)
 {
@@ -167,5 +218,66 @@ pair<string, string> protocol_split(const string &path)
 
 	return make_pair(path.substr(0, index), path.substr(index + 3, string::npos));
 }
+
+string get_executable_path()
+{
+#ifdef _WIN32
+	wchar_t target[4096];
+	DWORD ret = GetModuleFileNameW(GetModuleHandle(nullptr), target, sizeof(target) / sizeof(wchar_t));
+	return canonicalize_path(Path::to_utf8(target, ret));
+#else
+	pid_t pid = getpid();
+	static const char *exts[] = { "exe", "file", "a.out" };
+	char link_path[PATH_MAX];
+	char target[PATH_MAX];
+
+	for (auto *ext : exts)
+	{
+		snprintf(link_path, sizeof(link_path), "/proc/%u/%s",
+		         unsigned(pid), ext);
+		ssize_t ret = readlink(link_path, target, sizeof(target) - 1);
+		if (ret >= 0)
+			target[ret] = '\0';
+
+		return string(target);
+	}
+
+	return "";
+#endif
+}
+
+#ifdef _WIN32
+string to_utf8(const wchar_t *wstr, size_t len)
+{
+	vector<char> char_buffer;
+	auto ret = WideCharToMultiByte(CP_UTF8, 0, wstr, len, nullptr, 0, nullptr, nullptr);
+	if (ret < 0)
+		return "";
+	char_buffer.resize(ret);
+	WideCharToMultiByte(CP_UTF8, 0, wstr, len, char_buffer.data(), char_buffer.size(), nullptr, nullptr);
+	return string(char_buffer.data(), char_buffer.size());
+}
+
+wstring to_utf16(const char *str, size_t len)
+{
+	vector<wchar_t> wchar_buffer;
+	auto ret = MultiByteToWideChar(CP_UTF8, 0, str, len, nullptr, 0);
+	if (ret < 0)
+		return L"";
+	wchar_buffer.resize(ret);
+	MultiByteToWideChar(CP_UTF8, 0, str, len, wchar_buffer.data(), wchar_buffer.size());
+	return wstring(wchar_buffer.data(), wchar_buffer.size());
+}
+
+string to_utf8(const wstring &wstr)
+{
+	return to_utf8(wstr.data(), wstr.size());
+}
+
+wstring to_utf16(const string &str)
+{
+	return to_utf16(str.data(), str.size());
+}
+#endif
 }
 }

@@ -1,4 +1,4 @@
-/* Copyright (c) 2017 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2020 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -22,9 +22,8 @@
 
 #include "scene_loader.hpp"
 #include "gltf.hpp"
-#include "importers.hpp"
-#define RAPIDJSON_ASSERT(x) do { if (!(x)) throw "JSON error"; } while(0)
-#include "rapidjson/document.h"
+#include "scene_formats.hpp"
+#include "rapidjson_wrapper.hpp"
 #include "mesh_util.hpp"
 #include "enum_cast.hpp"
 #include "ground.hpp"
@@ -38,7 +37,8 @@ namespace Granite
 
 SceneLoader::SceneLoader()
 {
-	scene.reset(new Scene);
+	scene = make_unique<Scene>();
+	animation_system = make_unique<AnimationSystem>();
 }
 
 unique_ptr<AnimationSystem> SceneLoader::consume_animation_system()
@@ -46,21 +46,31 @@ unique_ptr<AnimationSystem> SceneLoader::consume_animation_system()
 	return move(animation_system);
 }
 
-void SceneLoader::load_scene(const std::string &path)
+AnimationSystem &SceneLoader::get_animation_system()
 {
-	animation_system.reset(new AnimationSystem);
+	return *animation_system;
+}
+
+Scene::NodeHandle SceneLoader::load_scene_to_root_node(const std::string &path)
+{
 	auto ext = Path::ext(path);
 	if (ext == "gltf" || ext == "glb")
 	{
-		parse_gltf(path);
+		return parse_gltf(path);
 	}
 	else
 	{
 		string json;
-		if (!Filesystem::get().read_file_to_string(path, json))
+		if (!Global::filesystem()->read_file_to_string(path, json))
 			throw runtime_error("Failed to load GLTF file.");
-		parse_scene_format(path, json);
+		return parse_scene_format(path, json);
 	}
+}
+
+void SceneLoader::load_scene(const std::string &path)
+{
+	auto node = load_scene_to_root_node(path);
+	scene->set_root_node(node);
 }
 
 Scene::NodeHandle SceneLoader::build_tree_for_subscene(const SubsceneData &subscene)
@@ -69,9 +79,13 @@ Scene::NodeHandle SceneLoader::build_tree_for_subscene(const SubsceneData &subsc
 	std::vector<Scene::NodeHandle> nodes;
 	nodes.reserve(parser.get_nodes().size());
 
+	auto &scene_nodes = parser.get_scenes()[parser.get_default_scene()];
+	auto touched = build_used_nodes_in_scene(scene_nodes, parser.get_nodes());
+
+	unsigned node_index = 0;
 	for (auto &node : parser.get_nodes())
 	{
-		if (!node.joint)
+		if (!node.joint && touched.count(node_index))
 		{
 			Scene::NodeHandle nodeptr;
 			if (node.has_skin)
@@ -84,8 +98,9 @@ Scene::NodeHandle SceneLoader::build_tree_for_subscene(const SubsceneData &subsc
 				{
 					if (animation.skin_compat == skin_compat)
 					{
-						animation_system->register_animation(animation.name, animation);
-						animation_system->start_animation(*nodeptr, animation.name, 0.0, true);
+						auto animation_id = animation_system->register_animation(animation.name, animation);
+						auto state_id = animation_system->start_animation(*nodeptr, animation_id, 0.0);
+						animation_system->set_repeating(state_id, true);
 					}
 				}
 #endif
@@ -100,14 +115,17 @@ Scene::NodeHandle SceneLoader::build_tree_for_subscene(const SubsceneData &subsc
 		}
 		else
 			nodes.push_back({});
+
+		node_index++;
 	}
 
 	for (auto &animation : parser.get_animations())
 	{
 		if (!animation.skinning)
 		{
-			animation_system->register_animation(animation.name, animation);
-			animation_system->start_animation(nodes.data(), animation.name, 0.0, true);
+			auto animation_id = animation_system->register_animation(animation.name, animation);
+			auto state_id = animation_system->start_animation_multi(nodes.data(), nodes.size(), animation_id, 0.0);
+			animation_system->set_repeating(state_id, true);
 		}
 	}
 
@@ -136,25 +154,36 @@ Scene::NodeHandle SceneLoader::build_tree_for_subscene(const SubsceneData &subsc
 		cam_params.set_depth_range(camera.znear, camera.zfar);
 		cam_entity->allocate_component<CameraComponent>()->camera = cam_params;
 
-		if (camera.attached_to_node)
+		if (camera.attached_to_node && touched.count(camera.node_index))
 		{
 			auto *t = cam_entity->allocate_component<CachedTransformComponent>();
 			t->transform = &nodes[camera.node_index]->cached_transform;
 		}
 	}
 
+	for (auto &light : parser.get_lights())
+	{
+		if (light.attached_to_node && touched.count(light.node_index))
+			scene->create_light(light, nodes[light.node_index].get());
+	}
+
 	auto root = scene->create_node();
+#if 0
 	for (auto &node : nodes)
 		if (node && !node->get_parent())
 			root->add_child(node);
+#else
+	for (auto &scene_node_index : scene_nodes.node_indices)
+		root->add_child(nodes[scene_node_index]);
+#endif
 
 	return root;
 }
 
-void SceneLoader::load_animation(const std::string &path, Importer::Animation &animation)
+void SceneLoader::load_animation(const std::string &path, SceneFormats::Animation &animation)
 {
 	string str;
-	if (!Filesystem::get().read_file_to_string(path, str))
+	if (!Global::filesystem()->read_file_to_string(path, str))
 	{
 		LOGE("Failed to load file: %s\n", path.c_str());
 		return;
@@ -171,7 +200,7 @@ void SceneLoader::load_animation(const std::string &path, Importer::Animation &a
 	for (auto itr = timestamps.Begin(); itr != timestamps.End(); ++itr)
 		timestamp_values.push_back(itr->GetFloat());
 
-	Importer::AnimationChannel channel;
+	SceneFormats::AnimationChannel channel;
 
 	if (doc.HasMember("rotation"))
 	{
@@ -187,7 +216,7 @@ void SceneLoader::load_animation(const std::string &path, Importer::Animation &a
 			slerp.values.push_back(normalize(quat(w, x, y, z)));
 		}
 
-		channel.type = Importer::AnimationChannel::Type::Rotation;
+		channel.type = SceneFormats::AnimationChannel::Type::Rotation;
 		channel.spherical = move(slerp);
 		channel.timestamps = timestamp_values;
 		animation.channels.push_back(move(channel));
@@ -206,7 +235,7 @@ void SceneLoader::load_animation(const std::string &path, Importer::Animation &a
 			linear.values.push_back(vec3(x, y, z));
 		}
 
-		channel.type = Importer::AnimationChannel::Type::Translation;
+		channel.type = SceneFormats::AnimationChannel::Type::Translation;
 		channel.linear = move(linear);
 		channel.timestamps = timestamp_values;
 		animation.channels.push_back(move(channel));
@@ -225,7 +254,7 @@ void SceneLoader::load_animation(const std::string &path, Importer::Animation &a
 			linear.values.push_back(vec3(x, y, z));
 		}
 
-		channel.type = Importer::AnimationChannel::Type::Scale;
+		channel.type = SceneFormats::AnimationChannel::Type::Scale;
 		channel.linear = move(linear);
 		channel.timestamps = timestamp_values;
 		animation.channels.push_back(move(channel));
@@ -234,44 +263,54 @@ void SceneLoader::load_animation(const std::string &path, Importer::Animation &a
 	animation.update_length();
 }
 
-void SceneLoader::parse_gltf(const std::string &path)
+Scene::NodeHandle SceneLoader::parse_gltf(const std::string &path)
 {
-	SubsceneData scene;
-	scene.parser.reset(new GLTF::Parser(path));
+	SubsceneData subscene;
+	subscene.parser = make_unique<GLTF::Parser>(path);
 
-	for (auto &mesh : scene.parser->get_meshes())
+	for (auto &mesh : subscene.parser->get_meshes())
+		subscene.meshes.push_back(create_imported_mesh(mesh, subscene.parser->get_materials().data()));
+
+	if (!subscene.parser->get_environments().empty())
 	{
-		Importer::MaterialInfo default_material;
-		default_material.uniform_base_color = vec4(0.3f, 1.0f, 0.3f, 1.0f);
-		default_material.uniform_metallic = 0.0f;
-		default_material.uniform_roughness = 1.0f;
-		AbstractRenderableHandle renderable;
+		auto &env = subscene.parser->get_environments().front();
 
-		bool skinned = mesh.attribute_layout[ecast(MeshAttribute::BoneIndex)].format != VK_FORMAT_UNDEFINED;
-		if (skinned)
+		Entity *entity = nullptr;
+		Util::IntrusivePtr<Skybox> skybox;
+		if (!env.cube.path.empty())
 		{
-			if (mesh.has_material)
-				renderable = Util::make_abstract_handle<AbstractRenderable, ImportedSkinnedMesh>(mesh,
-				                                                                                 scene.parser->get_materials()[mesh.material_index]);
-			else
-				renderable = Util::make_abstract_handle<AbstractRenderable, ImportedSkinnedMesh>(mesh, default_material);
+			skybox = Util::make_handle<Skybox>(env.cube.path, false);
+			entity = scene->create_renderable(skybox, nullptr);
+			entity->allocate_component<BackgroundComponent>();
+
+			if (!env.reflection.path.empty() && !env.irradiance.path.empty())
+			{
+				auto *ibl = entity->allocate_component<IBLComponent>();
+				ibl->irradiance_path = env.irradiance.path;
+				ibl->reflection_path = env.reflection.path;
+				ibl->intensity = env.intensity;
+			}
 		}
-		else
+
+		if (skybox)
+			entity->allocate_component<SkyboxComponent>()->skybox = skybox.get();
+
+		if (env.fog.falloff != 0.0f)
 		{
-			if (mesh.has_material)
-				renderable = Util::make_abstract_handle<AbstractRenderable, ImportedMesh>(mesh,
-				                                                                          scene.parser->get_materials()[mesh.material_index]);
-			else
-				renderable = Util::make_abstract_handle<AbstractRenderable, ImportedMesh>(mesh, default_material);
+			if (!entity)
+				entity = scene->create_entity();
+
+			FogParameters params = {};
+			params.color = env.fog.color;
+			params.falloff = env.fog.falloff;
+			entity->allocate_component<EnvironmentComponent>()->fog = params;
 		}
-		scene.meshes.push_back(renderable);
 	}
 
-	auto root_node = build_tree_for_subscene(scene);
-	this->scene->set_root_node(root_node);
+	return build_tree_for_subscene(subscene);
 }
 
-void SceneLoader::parse_scene_format(const std::string &path, const std::string &json)
+Scene::NodeHandle SceneLoader::parse_scene_format(const std::string &path, const std::string &json)
 {
 	Document doc;
 	doc.Parse(json);
@@ -289,7 +328,7 @@ void SceneLoader::parse_scene_format(const std::string &path, const std::string 
 
 		for (auto &mesh : parser.get_meshes())
 		{
-			Importer::MaterialInfo default_material;
+			SceneFormats::MaterialInfo default_material;
 			default_material.uniform_base_color = vec4(0.3f, 1.0f, 0.3f, 1.0f);
 			default_material.uniform_metallic = 0.0f;
 			default_material.uniform_roughness = 1.0f;
@@ -299,18 +338,18 @@ void SceneLoader::parse_scene_format(const std::string &path, const std::string 
 			if (skinned)
 			{
 				if (mesh.has_material)
-					renderable = Util::make_abstract_handle<AbstractRenderable, ImportedSkinnedMesh>(mesh,
-					                                                                                 parser.get_materials()[mesh.material_index]);
+					renderable = Util::make_handle<ImportedSkinnedMesh>(mesh,
+					                                                    parser.get_materials()[mesh.material_index]);
 				else
-					renderable = Util::make_abstract_handle<AbstractRenderable, ImportedSkinnedMesh>(mesh, default_material);
+					renderable = Util::make_handle<ImportedSkinnedMesh>(mesh, default_material);
 			}
 			else
 			{
 				if (mesh.has_material)
-					renderable = Util::make_abstract_handle<AbstractRenderable, ImportedMesh>(mesh,
-					                                                                          parser.get_materials()[mesh.material_index]);
+					renderable = Util::make_handle<ImportedMesh>(mesh,
+					                                             parser.get_materials()[mesh.material_index]);
 				else
-					renderable = Util::make_abstract_handle<AbstractRenderable, ImportedMesh>(mesh, default_material);
+					renderable = Util::make_handle<ImportedMesh>(mesh, default_material);
 			}
 			subscene.meshes.push_back(renderable);
 		}
@@ -397,7 +436,7 @@ void SceneLoader::parse_scene_format(const std::string &path, const std::string 
 		for (auto itr = animations.Begin(); itr != animations.End(); ++itr)
 		{
 			auto &animation = *itr;
-			Importer::Animation track;
+			SceneFormats::Animation track;
 
 			if (animation.HasMember("axisAngle"))
 			{
@@ -409,8 +448,8 @@ void SceneLoader::parse_scene_format(const std::string &path, const std::string 
 				float angular_freq = rotation[3].GetFloat();
 				float time_for_rotation = 2.0f * pi<float>() / angular_freq;
 
-				Importer::AnimationChannel channel;
-				channel.type = Importer::AnimationChannel::Type::Rotation;
+				SceneFormats::AnimationChannel channel;
+				channel.type = SceneFormats::AnimationChannel::Type::Rotation;
 				channel.spherical.values.push_back(angleAxis(0.00f * 2.0f * pi<float>(), direction));
 				channel.spherical.values.push_back(angleAxis(0.25f * 2.0f * pi<float>(), direction));
 				channel.spherical.values.push_back(angleAxis(0.50f * 2.0f * pi<float>(), direction));
@@ -434,30 +473,36 @@ void SceneLoader::parse_scene_format(const std::string &path, const std::string 
 			track.update_length();
 
 			auto ident = to_string(index);
+			AnimationID animation_id = 0;
 
 			if (!track.channels.empty())
-				animation_system->register_animation(ident, track);
+				animation_id = animation_system->register_animation(ident, track);
 
 			bool per_instance = false;
 			if (animation.HasMember("perInstance"))
 				per_instance = animation["perInstance"].GetBool();
 
 			auto &targets = animation["targetNodes"];
-			for (auto itr = targets.Begin(); itr != targets.End(); ++itr)
+			for (auto target_itr = targets.Begin(); target_itr != targets.End(); ++target_itr)
 			{
-				auto index = itr->GetUint();
-				auto &root = hierarchy[index];
+				auto &root = hierarchy[target_itr->GetUint()];
 
 				if (root->get_children().empty() || !per_instance)
-					animation_system->start_animation(*root, ident, 0.0, true);
+				{
+					auto state_id = animation_system->start_animation(*root, animation_id, 0.0);
+					animation_system->set_repeating(state_id, true);
+				}
 				else
 				{
 					for (auto &channel : track.channels)
-						if (channel.type == Importer::AnimationChannel::Type::Translation)
+						if (channel.type == SceneFormats::AnimationChannel::Type::Translation)
 							throw logic_error("Cannot use per-instance translation.");
 
 					for (auto &child : root->get_children())
-						animation_system->start_animation(*child, ident, 0.0, true);
+					{
+						auto state_id = animation_system->start_animation(*child, animation_id, 0.0);
+						animation_system->set_repeating(state_id, true);
+					}
 				}
 			}
 		}
@@ -470,9 +515,9 @@ void SceneLoader::parse_scene_format(const std::string &path, const std::string 
 		if (elem.HasMember("children"))
 		{
 			auto &children = elem["children"];
-			for (auto itr = children.Begin(); itr != children.End(); ++itr)
+			for (auto child_itr = children.Begin(); child_itr != children.End(); ++child_itr)
 			{
-				uint32_t index = itr->GetUint();
+				uint32_t index = child_itr->GetUint();
 				(*hier_itr)->add_child(hierarchy[index]);
 			}
 		}
@@ -483,38 +528,41 @@ void SceneLoader::parse_scene_format(const std::string &path, const std::string 
 		if (!node->get_parent())
 			root->add_child(node);
 
-	scene->set_root_node(root);
-
 	if (doc.HasMember("background"))
 	{
 		auto &bg = doc["background"];
 
-		EntityHandle entity;
+		Entity *entity = nullptr;
 
 		if (bg.HasMember("skybox"))
 		{
-			auto texture_path = Path::relpath(path, bg["skybox"]["path"].GetString());
+			auto &box = bg["skybox"];
+			auto texture_path = Path::relpath(path, box["path"].GetString());
 
-			AbstractRenderableHandle skybox;
+			Util::IntrusivePtr<Skybox> skybox;
+			AbstractRenderableHandle renderable;
 			bool use_ibl = false;
 
-			if (bg["skybox"].HasMember("projection"))
+			if (box.HasMember("projection"))
 			{
-				auto &proj = bg["skybox"]["projection"];
+				auto &proj = box["projection"];
 				if (strcmp(proj.GetString(), "latlon") == 0)
 				{
-					skybox = Util::make_abstract_handle<AbstractRenderable, Skybox>(texture_path, true);
+					skybox = Util::make_handle<Skybox>(texture_path, true);
+					renderable = skybox;
 					use_ibl = true;
 				}
 				else if (strcmp(proj.GetString(), "cube") == 0)
 				{
-					skybox = Util::make_abstract_handle<AbstractRenderable, Skybox>(texture_path, false);
+					skybox = Util::make_handle<Skybox>(texture_path, false);
+					renderable = skybox;
 					use_ibl = true;
 				}
 				else if (strcmp(proj.GetString(), "cylinder") == 0)
 				{
-					skybox = Util::make_abstract_handle<AbstractRenderable, SkyCylinder>(texture_path);
-					static_cast<SkyCylinder *>(skybox.get())->set_xz_scale(bg["skybox"]["cylinderScale"].GetFloat());
+					auto cylinder = Util::make_handle<SkyCylinder>(texture_path);
+					renderable = cylinder;
+					cylinder->set_xz_scale(box["cylinderScale"].GetFloat());
 				}
 				else
 					throw logic_error("Unsupported skybox projection.");
@@ -522,16 +570,29 @@ void SceneLoader::parse_scene_format(const std::string &path, const std::string 
 			else
 				throw logic_error("Skybox projection must be specified.");
 
-			entity = scene->create_renderable(skybox, nullptr);
-			if (use_ibl)
+			string reflection;
+			string irradiance;
+
+			if (box.HasMember("reflection"))
+				reflection = Path::relpath(path, box["reflection"].GetString());
+			if (box.HasMember("irradiance"))
+				irradiance = Path::relpath(path, box["irradiance"].GetString());
+
+			entity = scene->create_renderable(renderable, nullptr);
+			entity->allocate_component<BackgroundComponent>();
+
+			if (use_ibl || (!reflection.empty() && !irradiance.empty()))
 			{
-				auto irradiance_path = texture_path + ".irradiance";
-				auto reflection_path = texture_path + ".reflection";
-				static_cast<Skybox *>(skybox.get())->enable_irradiance(irradiance_path);
-				static_cast<Skybox *>(skybox.get())->enable_reflection(reflection_path);
-				auto *ibl = entity->allocate_component<IBLComponent>();
-				ibl->irradiance_path = irradiance_path;
-				ibl->reflection_path = reflection_path;
+				if (skybox)
+					entity->allocate_component<SkyboxComponent>()->skybox = skybox.get();
+
+				if (!reflection.empty() && !irradiance.empty())
+				{
+					auto *ibl = entity->allocate_component<IBLComponent>();
+					ibl->irradiance_path = irradiance;
+					ibl->reflection_path = reflection;
+					ibl->intensity = 1.0f;
+				}
 			}
 		}
 		else
@@ -542,7 +603,7 @@ void SceneLoader::parse_scene_format(const std::string &path, const std::string 
 			auto &fog = bg["fog"];
 			auto &color = fog["color"];
 
-			FogParameters params;
+			FogParameters params = {};
 			params.color = vec3(color[0].GetFloat(), color[1].GetFloat(), color[2].GetFloat());
 			params.falloff = fog["falloff"].GetFloat();
 			auto *environment = entity->allocate_component<EnvironmentComponent>();
@@ -582,6 +643,9 @@ void SceneLoader::parse_scene_format(const std::string &path, const std::string 
 		info.normalmap_fine = Path::relpath(path, terrain["normalTexture"].GetString());
 		info.splatmap = Path::relpath(path, terrain["splatmapTexture"].GetString());
 
+		if (terrain.HasMember("bandlimitedPixel"))
+			info.bandlimited_pixel = terrain["bandlimitedPixel"].GetBool();
+
 		float tiling_factor = 1.0f;
 		if (terrain.HasMember("tilingFactor"))
 			tiling_factor = terrain["tilingFactor"].GetFloat();
@@ -592,11 +656,11 @@ void SceneLoader::parse_scene_format(const std::string &path, const std::string 
 		if (terrain.HasMember("patchData"))
 		{
 			auto patch_path = Path::relpath(path, terrain["patchData"].GetString());
-			string json;
-			if (Filesystem::get().read_file_to_string(patch_path, json))
+			string patch_json;
+			if (Global::filesystem()->read_file_to_string(patch_path, patch_json))
 			{
 				Document patch_doc;
-				patch_doc.Parse(json);
+				patch_doc.Parse(patch_json);
 				auto &bias = patch_doc["bias"];
 				for (auto itr = bias.Begin(); itr != bias.End(); ++itr)
 					info.patch_lod_bias.push_back(itr->GetFloat());
@@ -628,12 +692,10 @@ void SceneLoader::parse_scene_format(const std::string &path, const std::string 
 		{
 			auto &info = *itr;
 
-			auto plane = Util::make_abstract_handle<AbstractRenderable, TexturePlane>(
+			auto plane = Util::make_handle<TexturePlane>(
 					Path::relpath(path, info["normalMap"].GetString()));
 
 			auto entity = scene->create_renderable(plane, nullptr);
-
-			auto *texture_plane = static_cast<TexturePlane *>(plane.get());
 
 			vec3 center = vec3(info["center"][0].GetFloat(), info["center"][1].GetFloat(), info["center"][2].GetFloat());
 			vec3 normal = vec3(info["normal"][0].GetFloat(), info["normal"][1].GetFloat(), info["normal"][2].GetFloat());
@@ -643,26 +705,28 @@ void SceneLoader::parse_scene_format(const std::string &path, const std::string 
 			float rad_x = info["radiusAcross"].GetFloat();
 			float zfar = info["zFar"].GetFloat();
 
-			texture_plane->set_plane(center, normal, up, rad_up, rad_x);
-			texture_plane->set_zfar(zfar);
+			plane->set_plane(center, normal, up, rad_up, rad_x);
+			plane->set_zfar(zfar);
 
 			if (info.HasMember("reflectionName"))
-				texture_plane->set_reflection_name(info["reflectionName"].GetString());
+				plane->set_reflection_name(info["reflectionName"].GetString());
 			if (info.HasMember("refractionName"))
-				texture_plane->set_refraction_name(info["refractionName"].GetString());
+				plane->set_refraction_name(info["refractionName"].GetString());
 
-			texture_plane->set_resolution_scale(info["resolutionScale"][0].GetFloat(), info["resolutionScale"][1].GetFloat());
+			plane->set_resolution_scale(info["resolutionScale"][0].GetFloat(), info["resolutionScale"][1].GetFloat());
 
-			texture_plane->set_base_emissive(emissive);
+			plane->set_base_emissive(emissive);
 			entity->free_component<UnboundedComponent>();
 			entity->allocate_component<RenderPassSinkComponent>();
 			auto *cull_plane = entity->allocate_component<CullPlaneComponent>();
-			cull_plane->plane = texture_plane->get_plane();
+			cull_plane->plane = plane->get_plane();
 
 			auto *rpass = entity->allocate_component<RenderPassComponent>();
-			rpass->creator = texture_plane;
+			rpass->creator = plane.get();
 		}
 	}
+
+	return root;
 }
 
 }

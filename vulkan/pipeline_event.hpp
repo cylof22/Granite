@@ -1,4 +1,4 @@
-/* Copyright (c) 2017 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2020 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -22,21 +22,26 @@
 
 #pragma once
 
-#include "vulkan.hpp"
-#include "intrusive.hpp"
+#include "vulkan_headers.hpp"
+#include "vulkan_common.hpp"
+#include "cookie.hpp"
+#include "object_pool.hpp"
 
 namespace Vulkan
 {
 class Device;
+class EventHolder;
 
-class EventHolder : public Util::IntrusivePtrEnabled<EventHolder>
+struct EventHolderDeleter
+{
+	void operator()(EventHolder *event);
+};
+
+class EventHolder : public Util::IntrusivePtrEnabled<EventHolder, EventHolderDeleter, HandleCounter>,
+                    public InternalSyncEnabled
 {
 public:
-	EventHolder(Device *device, VkEvent event)
-	    : device(device)
-	    , event(event)
-	{
-	}
+	friend struct EventHolderDeleter;
 
 	~EventHolder();
 
@@ -50,12 +55,19 @@ public:
 		return stages;
 	}
 
-	void set_stages(VkPipelineStageFlags stages)
+	void set_stages(VkPipelineStageFlags stages_)
 	{
-		this->stages = stages;
+		stages = stages_;
 	}
 
 private:
+	friend class Util::ObjectPool<EventHolder>;
+	EventHolder(Device *device_, VkEvent event_)
+		: device(device_)
+		, event(event_)
+	{
+	}
+
 	Device *device;
 	VkEvent event;
 	VkPipelineStageFlags stages = 0;

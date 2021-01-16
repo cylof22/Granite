@@ -1,4 +1,4 @@
-/* Copyright (c) 2017 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2020 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -26,6 +26,7 @@
 #include "device.hpp"
 #include "sprite.hpp"
 #include <string.h>
+#include <float.h>
 
 using namespace Vulkan;
 using namespace std;
@@ -35,7 +36,7 @@ namespace Granite
 {
 Font::Font(const std::string &path, unsigned size)
 {
-	auto file = Filesystem::get().open(path, FileMode::ReadOnly);
+	auto file = Global::filesystem()->open(path, FileMode::ReadOnly);
 	if (!file)
 		throw runtime_error("Failed to open font.");
 
@@ -76,7 +77,7 @@ Font::Font(const std::string &path, unsigned size)
 vec2 Font::get_text_geometry(const char *text, float) const
 {
 	if (!*text)
-		return ivec2(0);
+		return vec2(0);
 
 	vec2 off = vec2(0.0f);
 	off.y += font_height;
@@ -165,7 +166,7 @@ void Font::render_text(RenderQueue &queue, const char *text, const vec3 &offset,
 
 	size_t len = strlen(text);
 	SpriteRenderInfo sprite;
-	sprite.texture = view.get();
+	sprite.textures[0] = &texture->get_view();
 	sprite.sampler = StockSampler::LinearWrap;
 
 	auto *instance_data = queue.allocate_one<SpriteInstanceInfo>();
@@ -208,10 +209,10 @@ void Font::render_text(RenderQueue &queue, const char *text, const vec3 &offset,
 			quad.pos_off_y = q.y0;
 			quad.pos_scale_x = q.x1 - q.x0;
 			quad.pos_scale_y = q.y1 - q.y0;
-			quad.tex_off_x = round(q.s0 * width);
-			quad.tex_off_y = round(q.t0 * height);
-			quad.tex_scale_x = round(q.s1 * width) - quad.tex_off_x;
-			quad.tex_scale_y = round(q.t1 * height) - quad.tex_off_y;
+			quad.tex_off_x = muglm::round(q.s0 * width);
+			quad.tex_off_y = muglm::round(q.t0 * height);
+			quad.tex_scale_x = muglm::round(q.s1 * width) - quad.tex_off_x;
+			quad.tex_scale_y = muglm::round(q.t1 * height) - quad.tex_off_y;
 
 			max_rect = max(max_rect, vec2(q.x1, q.y1));
 			min_rect = min(min_rect, vec2(q.x0, q.y0));
@@ -223,8 +224,9 @@ void Font::render_text(RenderQueue &queue, const char *text, const vec3 &offset,
 		sprite.clip_quad = ivec4(ivec2(clip_offset), ivec2(clip_size));
 
 	Hasher hasher;
-	hasher.pointer(sprite.texture);
-	hasher.u32(ecast(sprite.sampler));
+	hasher.string("font");
+	hasher.pointer(sprite.textures[0]);
+	hasher.s32(ecast(sprite.sampler));
 	hasher.s32(sprite.clip_quad.x);
 	hasher.s32(sprite.clip_quad.y);
 	hasher.s32(sprite.clip_quad.z);
@@ -243,7 +245,8 @@ void Font::render_text(RenderQueue &queue, const char *text, const vec3 &offset,
 		                                                                                      MESH_ATTRIBUTE_UV_BIT |
 		                                                                                      MESH_ATTRIBUTE_POSITION_BIT |
 		                                                                                      MESH_ATTRIBUTE_VERTEX_COLOR_BIT,
-		                                                                                      MATERIAL_TEXTURE_BASE_COLOR_BIT).get();
+		                                                                                      MATERIAL_TEXTURE_BASE_COLOR_BIT,
+		                                                                                      Sprite::ALPHA_TEXTURE_BIT);
 
 		*sprite_data = sprite;
 	}
@@ -257,22 +260,11 @@ void Font::on_device_created(const DeviceCreatedEvent &created)
 	ImageInitialData initial = {};
 	initial.data = bitmap.data();
 	texture = device.create_image(info, &initial);
-
-	ImageViewCreateInfo view_info;
-	view_info.image = texture.get();
-	view_info.swizzle.r = VK_COMPONENT_SWIZZLE_ONE;
-	view_info.swizzle.g = VK_COMPONENT_SWIZZLE_ONE;
-	view_info.swizzle.b = VK_COMPONENT_SWIZZLE_ONE;
-	view_info.swizzle.a = VK_COMPONENT_SWIZZLE_R;
-	view_info.format = VK_FORMAT_R8_UNORM;
-	view_info.levels = 1;
-	view_info.layers = 1;
-	view = device.create_image_view(view_info);
+	device.set_name(*texture, "font");
 }
 
 void Font::on_device_destroyed(const DeviceCreatedEvent &)
 {
-	view.reset();
 	texture.reset();
 }
 

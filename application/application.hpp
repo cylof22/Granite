@@ -1,4 +1,4 @@
-/* Copyright (c) 2017 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2020 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -21,23 +21,13 @@
  */
 
 #pragma once
-
 #include "wsi.hpp"
-#include "render_context.hpp"
-#include "scene_loader.hpp"
-#include "animation_system.hpp"
-#include "renderer.hpp"
+#include "application_wsi_events.hpp"
 #include "input.hpp"
-#include "timer.hpp"
-#include "event.hpp"
-#include "font.hpp"
-#include "ui_manager.hpp"
-#include "render_graph.hpp"
-#include "mesh_util.hpp"
+#include "camera.hpp"
 
 namespace Granite
 {
-
 class Application
 {
 public:
@@ -48,7 +38,7 @@ public:
 
 	Vulkan::WSI &get_wsi()
 	{
-		return wsi;
+		return application_wsi;
 	}
 
 	Vulkan::WSIPlatform &get_platform()
@@ -79,76 +69,20 @@ public:
 	bool poll();
 	void run_frame();
 
-private:
-	unsigned width = 0, height = 0;
-	std::unique_ptr<Vulkan::WSIPlatform> platform;
-	Vulkan::WSI wsi;
-};
-
-class SceneViewerApplication : public Application, public EventHandler
-{
-public:
-	SceneViewerApplication(const std::string &path);
-	void render_frame(double frame_time, double elapsed_time) override;
-	void rescale_scene(float radius);
-	void loop_animations();
-
 protected:
-	void update_scene(double frame_time, double elapsed_time);
-	void render_scene();
-
-	RenderContext context;
-	RenderContext depth_context;
-	Renderer forward_renderer;
-	Renderer deferred_renderer;
-	Renderer depth_renderer;
-	LightingParameters lighting;
-	FPSCamera cam;
-	VisibilityList visible;
-	VisibilityList depth_visible;
-	SceneLoader scene_loader;
-	std::unique_ptr<AnimationSystem> animation_system;
-
-	Camera *selected_camera = nullptr;
-
-	void on_device_created(const Vulkan::DeviceCreatedEvent &e);
-	void on_device_destroyed(const Vulkan::DeviceCreatedEvent &e);
-	void on_swapchain_changed(const Vulkan::SwapchainParameterEvent &e);
-	void on_swapchain_destroyed(const Vulkan::SwapchainParameterEvent &e);
-	RenderGraph graph;
-
-	Vulkan::Texture *reflection = nullptr;
-	Vulkan::Texture *irradiance = nullptr;
-
-	bool need_shadow_map_update = true;
-	void update_shadow_map();
-	std::string skydome_reflection;
-	std::string skydome_irradiance;
-	AABB shadow_scene_aabb;
-
-	void update_shadow_scene_aabb();
-	void render_shadow_map_near(Vulkan::CommandBuffer &cmd);
-	void render_shadow_map_far(Vulkan::CommandBuffer &cmd);
-	void render_main_pass(Vulkan::CommandBuffer &cmd, const mat4 &proj, const mat4 &view);
-	void render_transparent_objects(Vulkan::CommandBuffer &cmd, const mat4 &proj, const mat4 &view);
-
-	enum class MainPassType
+	void request_shutdown()
 	{
-		Main,
-		Reflection,
-		Refraction
-	};
-	void add_main_pass(Vulkan::Device &device, const std::string &tag, MainPassType type);
+		requested_shutdown = true;
+	}
 
-	enum class DepthPassType
-	{
-		Main,
-		Near
-	};
-	void add_shadow_pass(Vulkan::Device &device, const std::string &tag, DepthPassType type);
-
-	float cascade_cutoff_distance = 10.0f;
+private:
+	std::unique_ptr<Vulkan::WSIPlatform> platform;
+	Vulkan::WSI application_wsi;
+	bool requested_shutdown = false;
 };
+
+int application_main(Application *(*create_application)(int, char **), int argc, char **argv);
+int application_main_headless(Application *(*create_application)(int, char **), int argc, char **argv);
 
 extern Application *application_create(int argc, char *argv[]);
 

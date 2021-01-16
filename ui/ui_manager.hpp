@@ -1,4 +1,4 @@
-/* Copyright (c) 2017 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2020 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -42,7 +42,7 @@ enum class FontSize
 class UIManager : public EventHandler
 {
 public:
-	static UIManager &get();
+	UIManager();
 
 	bool filter_input_event(const TouchDownEvent &e);
 	bool filter_input_event(const TouchUpEvent &e);
@@ -59,7 +59,7 @@ public:
 	template <typename T, typename... P>
 	inline T *add_child(P&&... p)
 	{
-		auto handle = Util::make_abstract_handle<Widget, T>(std::forward<P>(p)...);
+		auto handle = Util::make_handle<T>(std::forward<P>(p)...);
 		add_child(handle);
 		return static_cast<T *>(handle.get());
 	}
@@ -68,16 +68,18 @@ public:
 	Font &get_font(FontSize size);
 
 	void reset_children();
+	void remove_child(Widget *widget);
 
 private:
-	UIManager();
 	FlatRenderer renderer;
 	std::vector<WidgetHandle> widgets;
 	std::unique_ptr<Font> fonts[Util::ecast(FontSize::Count)];
-	Font::Alignment alignment = Font::Alignment::Center;
+	//Font::Alignment alignment = Font::Alignment::Center;
 
 	Widget *drag_receiver = nullptr;
 	vec2 drag_receiver_base = vec2(0.0f);
+
+	unsigned touch_emulation_id = ~0u;
 };
 }
 }

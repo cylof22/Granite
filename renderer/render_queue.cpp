@@ -1,4 +1,4 @@
-/* Copyright (c) 2017 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2020 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -52,7 +52,7 @@ void RenderQueue::combine_render_info(const RenderQueue &queue)
 	}
 }
 
-void RenderQueue::dispatch(Queue queue_type, CommandBuffer &cmd, const CommandBufferSavedState *state, size_t begin, size_t end)
+void RenderQueue::dispatch_range(Queue queue_type, CommandBuffer &cmd, const CommandBufferSavedState *state, size_t begin, size_t end) const
 {
 	auto *queue = queues[ecast(queue_type)].data();
 
@@ -73,9 +73,23 @@ void RenderQueue::dispatch(Queue queue_type, CommandBuffer &cmd, const CommandBu
 	}
 }
 
-void RenderQueue::dispatch(Queue queue, CommandBuffer &cmd, const CommandBufferSavedState *state)
+size_t RenderQueue::get_dispatch_size(Queue queue) const
 {
-	dispatch(queue, cmd, state, 0, queues[ecast(queue)].size());
+	return queues[ecast(queue)].size();
+}
+
+void RenderQueue::dispatch(Queue queue, CommandBuffer &cmd, const CommandBufferSavedState *state) const
+{
+	dispatch_range(queue, cmd, state, 0, queues[ecast(queue)].size());
+}
+
+void RenderQueue::dispatch_subset(Queue queue, Vulkan::CommandBuffer &cmd, const Vulkan::CommandBufferSavedState *state,
+                                  unsigned index, unsigned num_indices) const
+{
+	size_t size = get_dispatch_size(queue);
+	size_t begin_index = (size * index) / num_indices;
+	size_t end_index = (size * (index + 1)) / num_indices;
+	dispatch_range(queue, cmd, state, begin_index, end_index);
 }
 
 void RenderQueue::enqueue_queue_data(Queue queue_type, const RenderQueueData &render_info)
@@ -83,15 +97,21 @@ void RenderQueue::enqueue_queue_data(Queue queue_type, const RenderQueueData &re
 	queues[ecast(queue_type)].push_back(render_info);
 }
 
-RenderQueue::Chain::iterator RenderQueue::insert_block()
+Util::ThreadSafeObjectPool<RenderQueue::Block> RenderQueue::allocator_pool;
+
+RenderQueue::Block *RenderQueue::insert_block()
 {
-	return blocks.insert(end(blocks), Block(BlockSize));
+	auto *ret = allocator_pool.allocate();
+	blocks.push_back(ret);
+	return ret;
 }
 
-RenderQueue::Chain::iterator RenderQueue::insert_large_block(size_t size, size_t alignment)
+RenderQueue::Block *RenderQueue::insert_large_block(size_t size, size_t alignment)
 {
 	size_t padded_size = alignment > alignof(uintmax_t) ? (size + alignment) : size;
-	return large_blocks.insert(end(large_blocks), Block(padded_size));
+	auto *ret = allocator_pool.allocate(padded_size);
+	blocks.push_back(ret);
+	return ret;
 }
 
 void *RenderQueue::allocate_from_block(Block &block, size_t size, size_t alignment)
@@ -108,51 +128,58 @@ void *RenderQueue::allocate_from_block(Block &block, size_t size, size_t alignme
 		return nullptr;
 }
 
+void RenderQueue::recycle_blocks()
+{
+	for (auto *block : blocks)
+		allocator_pool.free(block);
+	blocks.clear();
+	current = nullptr;
+}
+
 void RenderQueue::reset()
 {
-	current = begin(blocks);
-	if (current != end(blocks))
-		current->reset();
-
-	memset(queues, 0, sizeof(queues));
-	large_blocks.clear();
+	recycle_blocks();
+	for (auto &queue : queues)
+		queue.clear();
 	render_infos.clear();
 }
 
-void RenderQueue::reset_and_reclaim()
+RenderQueue::~RenderQueue()
 {
-	blocks.clear();
-	large_blocks.clear();
-	render_infos.clear();
-	current = end(blocks);
-
-	memset(queues, 0, sizeof(queues));
+	recycle_blocks();
 }
 
 void *RenderQueue::allocate(size_t size, size_t alignment)
 {
 	if (size + alignment > BlockSize)
 	{
-		auto itr = insert_large_block(size, alignment);
-		return allocate_from_block(*itr, size, alignment);
+		auto *block = insert_large_block(size, alignment);
+		return allocate_from_block(*block, size, alignment);
 	}
 
 	// First allocation.
-	if (current == end(blocks))
+	if (!current)
 		current = insert_block();
 
 	void *data = allocate_from_block(*current, size, alignment);
 	if (data)
 		return data;
 
-	++current;
-	if (current == end(blocks))
-		current = insert_block();
-	else
-		current->reset();
-
+	current = insert_block();
 	data = allocate_from_block(*current, size, alignment);
 	return data;
+}
+
+void RenderQueue::push_renderables(const RenderContext &context, const VisibilityList &visible)
+{
+	for (auto &vis : visible)
+		vis.renderable->get_render_info(context, vis.transform, *this);
+}
+
+void RenderQueue::push_depth_renderables(const RenderContext &context, const VisibilityList &visible)
+{
+	for (auto &vis : visible)
+		vis.renderable->get_depth_render_info(context, vis.transform, *this);
 }
 
 uint64_t RenderInfo::get_background_sort_key(Queue queue_type, Util::Hash pipeline_hash, Util::Hash draw_hash)
@@ -172,7 +199,7 @@ uint64_t RenderInfo::get_sprite_sort_key(Queue queue_type, Util::Hash pipeline_h
 	static_assert(ecast(StaticLayer::Count) == 4, "Number of static layers is not 4.");
 
 	// Monotonically increasing floating point will be monotonic in uint32_t as well when z is non-negative.
-	z = glm::max(z, 0.0f);
+	z = muglm::max(z, 0.0f);
 	uint32_t depth_key = floatBitsToUint(z);
 
 	pipeline_hash &= 0xffff0000u;
@@ -182,14 +209,19 @@ uint64_t RenderInfo::get_sprite_sort_key(Queue queue_type, Util::Hash pipeline_h
 	{
 		depth_key ^= 0xffffffffu; // Back-to-front instead.
 		// Prioritize correct back-to-front rendering over pipeline.
-		return (Hash(depth_key) << 32) | pipeline_hash;
+		return (uint64_t(depth_key) << 32) | pipeline_hash;
 	}
 	else
 	{
-		depth_key >>= 2;
-
+#if 1
 		// Prioritize state changes over depth.
-		return (uint64_t(ecast(layer)) << 62) | (pipeline_hash << 30) | depth_key;
+		depth_key >>= 2;
+		return (uint64_t(ecast(layer)) << 62) | (uint64_t(pipeline_hash) << 30) | depth_key;
+#else
+		// Prioritize front-back sorting over state changes.
+		pipeline_hash >>= 2;
+		return (uint64_t(ecast(layer)) << 62) | (uint64_t(depth_key) << 30) | pipeline_hash;
+#endif
 	}
 }
 

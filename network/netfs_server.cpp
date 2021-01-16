@@ -1,4 +1,4 @@
-/* Copyright (c) 2017 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2020 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -21,7 +21,7 @@
  */
 
 #include "network.hpp"
-#include "util.hpp"
+#include "logging.hpp"
 #include "netfs.hpp"
 #include "filesystem.hpp"
 #include "event.hpp"
@@ -35,15 +35,15 @@ struct FSHandler;
 
 struct FilesystemHandler : LooperHandler
 {
-	FilesystemHandler(unique_ptr<Socket> socket, FilesystemBackend &backend)
-		: LooperHandler(move(socket)), backend(backend)
+	FilesystemHandler(unique_ptr<Socket> socket_, FilesystemBackend &backend_)
+		: LooperHandler(move(socket_)), backend(backend_)
 	{
 	}
 
 	bool handle(Looper &, EventFlags flags) override
 	{
 		if (flags & EVENT_IN)
-			Filesystem::get().poll_notifications();
+			Global::filesystem()->poll_notifications();
 
 		return true;
 	}
@@ -58,11 +58,11 @@ struct FilesystemHandler : LooperHandler
 
 struct NotificationSystem : EventHandler
 {
-	NotificationSystem(Looper &looper)
-		: looper(looper)
+	explicit NotificationSystem(Looper &looper_)
+		: looper(looper_)
 	{
 		EVENT_MANAGER_REGISTER(NotificationSystem, on_filesystem, FilesystemProtocolEvent);
-		for (auto &proto : Filesystem::get().get_protocols())
+		for (auto &proto : Global::filesystem()->get_protocols())
 		{
 			auto &fs = proto.second;
 			if (fs->get_notification_fd() >= 0)
@@ -119,8 +119,8 @@ struct NotificationSystem : EventHandler
 
 struct FSHandler : LooperHandler
 {
-	FSHandler(NotificationSystem &notify_system, unique_ptr<Socket> socket)
-		: LooperHandler(move(socket)), notify_system(notify_system)
+	FSHandler(NotificationSystem &notify_system_, unique_ptr<Socket> socket_)
+		: LooperHandler(move(socket_)), notify_system(notify_system_)
 	{
 		reply_builder.begin(4);
 		command_reader.start(reply_builder.get_buffer());
@@ -278,7 +278,7 @@ struct FSHandler : LooperHandler
 
 	bool begin_write_file(Looper &looper, const string &arg)
 	{
-		file = Filesystem::get().open(arg, FileMode::WriteOnly);
+		file = Global::filesystem()->open(arg, FileMode::WriteOnly);
 		if (!file)
 		{
 			reply_builder.begin();
@@ -300,7 +300,7 @@ struct FSHandler : LooperHandler
 
 	bool begin_read_file(const string &arg)
 	{
-		file = Filesystem::get().open(arg);
+		file = Global::filesystem()->open(arg);
 		mapped = nullptr;
 		if (file)
 			mapped = file->map();
@@ -354,10 +354,10 @@ struct FSHandler : LooperHandler
 		FileStat s;
 		reply_builder.begin();
 		reply_builder.add_u32(NETFS_BEGIN_CHUNK_REPLY);
-		if (Filesystem::get().stat(arg, s))
+		if (Global::filesystem()->stat(arg, s))
 		{
 			reply_builder.add_u32(NETFS_ERROR_OK);
-			reply_builder.add_u64(8 + 4);
+			reply_builder.add_u64(8 + 4 + 8);
 			reply_builder.add_u64(s.size);
 			switch (s.type)
 			{
@@ -371,6 +371,7 @@ struct FSHandler : LooperHandler
 				reply_builder.add_u32(NETFS_FILE_TYPE_SPECIAL);
 				break;
 			}
+			reply_builder.add_u64(s.last_modified);
 		}
 		else
 		{
@@ -383,14 +384,14 @@ struct FSHandler : LooperHandler
 
 	bool begin_list(const string &arg)
 	{
-		auto list = Filesystem::get().list(arg);
+		auto list = Global::filesystem()->list(arg);
 		write_string_list(list);
 		return true;
 	}
 
 	bool begin_walk(const string &arg)
 	{
-		auto list = Filesystem::get().walk(arg);
+		auto list = Global::filesystem()->walk(arg);
 		write_string_list(list);
 		return true;
 	}
@@ -710,8 +711,8 @@ void FilesystemHandler::uninstall_all_notifications(FSHandler *handler)
 
 struct ListenerHandler : TCPListener
 {
-	ListenerHandler(NotificationSystem &notify_system, uint16_t port)
-		: TCPListener(port), notify_system(notify_system)
+	ListenerHandler(NotificationSystem &notify_system_, uint16_t port)
+		: TCPListener(port), notify_system(notify_system_)
 	{
 	}
 

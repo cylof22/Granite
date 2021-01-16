@@ -1,4 +1,4 @@
-/* Copyright (c) 2017 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2020 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -34,7 +34,13 @@ class SceneLoader
 {
 public:
 	SceneLoader();
+
+	// Loads scene and sets the root node of the loaded scene.
 	void load_scene(const std::string &path);
+
+	// Loads scene and returns the root node.
+	// You must insert the node manually into the scene as appropriate.
+	Scene::NodeHandle load_scene_to_root_node(const std::string &path);
 
 	Scene &get_scene()
 	{
@@ -42,6 +48,7 @@ public:
 	}
 
 	std::unique_ptr<AnimationSystem> consume_animation_system();
+	AnimationSystem &get_animation_system();
 
 private:
 	struct SubsceneData
@@ -53,10 +60,10 @@ private:
 
 	std::unique_ptr<Scene> scene;
 	std::unique_ptr<AnimationSystem> animation_system;
-	void parse_scene_format(const std::string &path, const std::string &json);
-	void parse_gltf(const std::string &path);
+	Scene::NodeHandle parse_scene_format(const std::string &path, const std::string &json);
+	Scene::NodeHandle parse_gltf(const std::string &path);
 
 	Scene::NodeHandle build_tree_for_subscene(const SubsceneData &subscene);
-	void load_animation(const std::string &path, Importer::Animation &animation);
+	void load_animation(const std::string &path, SceneFormats::Animation &animation);
 };
 }

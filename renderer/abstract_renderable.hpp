@@ -1,4 +1,4 @@
-/* Copyright (c) 2017 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2020 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -30,7 +30,7 @@ namespace Granite
 class RenderQueue;
 class RenderContext;
 class ShaderSuite;
-struct CachedSpatialTransformComponent;
+struct RenderInfoComponent;
 struct SpriteTransformInfo;
 
 enum class DrawPipeline : unsigned
@@ -40,13 +40,19 @@ enum class DrawPipeline : unsigned
 	AlphaBlend,
 };
 
+enum RenderableFlagBits
+{
+	RENDERABLE_FORCE_VISIBLE_BIT = 1 << 0
+};
+using RenderableFlags = uint32_t;
+
 class AbstractRenderable : public Util::IntrusivePtrEnabled<AbstractRenderable>
 {
 public:
 	virtual ~AbstractRenderable() = default;
-	virtual void get_render_info(const RenderContext &context, const CachedSpatialTransformComponent *transform, RenderQueue &queue) const = 0;
+	virtual void get_render_info(const RenderContext &context, const RenderInfoComponent *transform, RenderQueue &queue) const = 0;
 
-	virtual void get_depth_render_info(const RenderContext &context, const CachedSpatialTransformComponent *transform, RenderQueue &queue) const
+	virtual void get_depth_render_info(const RenderContext &context, const RenderInfoComponent *transform, RenderQueue &queue) const
 	{
 		return get_render_info(context, transform, queue);
 	}
@@ -60,16 +66,18 @@ public:
 		return false;
 	}
 
-	virtual const AABB &get_static_aabb() const
+	virtual const AABB *get_static_aabb() const
 	{
 		static const AABB aabb(vec3(0.0f), vec3(0.0f));
-		return aabb;
+		return &aabb;
 	}
 
 	virtual DrawPipeline get_mesh_draw_pipeline() const
 	{
 		return DrawPipeline::Opaque;
 	}
+
+	RenderableFlags flags = 0;
 };
 using AbstractRenderableHandle = Util::IntrusivePtr<AbstractRenderable>;
 }

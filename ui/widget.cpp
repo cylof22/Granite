@@ -1,4 +1,4 @@
-/* Copyright (c) 2017 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2020 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -37,7 +37,7 @@ float Widget::render_children(FlatRenderer &renderer, float layer, vec2 offset)
 	{
 		if (child.widget->get_visible())
 		{
-			if (child.widget->bg_color.a > 0.0f)
+			if (child.widget->bg_color.w > 0.0f)
 			{
 				if (child.widget->bg_image)
 				{
@@ -45,7 +45,7 @@ float Widget::render_children(FlatRenderer &renderer, float layer, vec2 offset)
 					renderer.render_textured_quad(image.get_view(),
 					                              vec3(child.offset + offset, layer - 0.5f), vec2(child.size),
 					                              vec2(0.0f), vec2(image.get_width(0), image.get_height(0)),
-					                              true, child.widget->bg_color, Vulkan::StockSampler::LinearClamp);
+					                              DrawPipeline::AlphaBlend, child.widget->bg_color, Vulkan::StockSampler::LinearClamp);
 				}
 				else
 				{
@@ -81,7 +81,7 @@ Widget *Widget::on_mouse_button_pressed(vec2 offset)
 
 void Widget::add_child(Util::IntrusivePtr<Widget> widget)
 {
-	children.push_back({ ivec2(0), ivec2(0), widget });
+	children.push_back({ vec2(0), vec2(0), widget });
 	assert(widget->parent == nullptr);
 	widget->parent = this;
 	geometry_changed();

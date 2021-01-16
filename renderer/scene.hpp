@@ -1,4 +1,4 @@
-/* Copyright (c) 2017 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2020 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -25,17 +25,12 @@
 #include "ecs.hpp"
 #include "render_components.hpp"
 #include "frustum.hpp"
-#include <tuple>
-#include "importers.hpp"
+#include "scene_formats.hpp"
+#include "no_init_pod.hpp"
+#include "thread_group.hpp"
 
 namespace Granite
 {
-struct RenderableInfo
-{
-	AbstractRenderable *renderable;
-	const CachedSpatialTransformComponent *transform;
-};
-using VisibilityList = std::vector<RenderableInfo>;
 
 class RenderContext;
 struct EnvironmentComponent;
@@ -46,51 +41,95 @@ public:
 	Scene();
 	~Scene();
 
-	void refresh_per_frame(RenderContext &context);
-	void update_cached_transforms();
-	void gather_visible_opaque_renderables(const Frustum &frustum, VisibilityList &list);
-	void gather_visible_transparent_renderables(const Frustum &frustum, VisibilityList &list);
-	void gather_visible_static_shadow_renderables(const Frustum &frustum, VisibilityList &list);
-	void gather_visible_dynamic_shadow_renderables(const Frustum &frustum, VisibilityList &list);
-	void gather_visible_render_pass_sinks(const vec3 &camera_pos, VisibilityList &list);
-	void gather_background_renderables(VisibilityList &list);
+	// Non-copyable, movable.
+	Scene(const Scene &) = delete;
+	void operator=(const Scene &) = delete;
+
+	void refresh_per_frame(const RenderContext &context, TaskComposer &composer);
+
+	void update_all_transforms();
+	void update_transform_tree();
+	void update_transform_tree(TaskComposer &composer);
+	void update_transform_listener_components();
+	void update_cached_transforms_subset(unsigned index, unsigned num_indices);
+	size_t get_cached_transforms_count() const;
+
+	void gather_visible_opaque_renderables(const Frustum &frustum, VisibilityList &list) const;
+	void gather_visible_transparent_renderables(const Frustum &frustum, VisibilityList &list) const;
+	void gather_visible_static_shadow_renderables(const Frustum &frustum, VisibilityList &list) const;
+	void gather_visible_dynamic_shadow_renderables(const Frustum &frustum, VisibilityList &list) const;
+	void gather_visible_positional_lights(const Frustum &frustum, VisibilityList &list) const;
+	void gather_visible_positional_lights(const Frustum &frustum, PositionalLightList &list) const;
+
+	void gather_visible_opaque_renderables_subset(const Frustum &frustum, VisibilityList &list,
+	                                              unsigned index, unsigned num_indices) const;
+	void gather_visible_transparent_renderables_subset(const Frustum &frustum, VisibilityList &list,
+	                                                   unsigned index, unsigned num_indices) const;
+	void gather_visible_static_shadow_renderables_subset(const Frustum &frustum, VisibilityList &list,
+	                                                     unsigned index, unsigned num_indices) const;
+	void gather_visible_dynamic_shadow_renderables_subset(const Frustum &frustum, VisibilityList &list,
+	                                                      unsigned index, unsigned num_indices) const;
+	void gather_visible_positional_lights_subset(const Frustum &frustum, VisibilityList &list,
+	                                             unsigned index, unsigned num_indices) const;
+	void gather_visible_positional_lights_subset(const Frustum &frustum, PositionalLightList &list,
+	                                             unsigned index, unsigned num_indices) const;
+
+	size_t get_opaque_renderables_count() const;
+	size_t get_transparent_renderables_count() const;
+	size_t get_static_shadow_renderables_count() const;
+	size_t get_dynamic_shadow_renderables_count() const;
+	size_t get_positional_lights_count() const;
+
+	void gather_visible_render_pass_sinks(const vec3 &camera_pos, VisibilityList &list) const;
+	void gather_unbounded_renderables(VisibilityList &list) const;
 	EnvironmentComponent *get_environment() const;
 	EntityPool &get_entity_pool();
 
 	void add_render_passes(RenderGraph &graph);
 	void add_render_pass_dependencies(RenderGraph &graph, RenderPass &main_pass);
-	void set_render_pass_data(Renderer *renderer, const RenderContext *context);
+	void set_render_pass_data(const RendererSuite *suite, const RenderContext *context);
 	void bind_render_graph_resources(RenderGraph &graph);
 
-	class Node : public Util::IntrusivePtrEnabled<Node>
+	class Node;
+	struct NodeDeleter
+	{
+		void operator()(Node *node);
+	};
+
+	// TODO: Need to slim this down, and be more data oriented.
+	// Should possibly maintain separate large buffers with transform matrices, and just point to those
+	// in the node.
+	class Node : public Util::IntrusivePtrEnabled<Node, NodeDeleter>
 	{
 	public:
+		explicit Node(Scene *parent_)
+			: parent_scene(parent_)
+		{
+		}
+
+		~Node()
+		{
+			if (skinning)
+				parent_scene->skinning_pool.free(skinning);
+		}
+
+		Scene *parent_scene;
 		Transform transform;
 		CachedTransform cached_transform;
-		CachedSkinTransform cached_skin_transform;
 
 		void invalidate_cached_transform();
 		void add_child(Util::IntrusivePtr<Node> node);
-		void remove_child(Node &node);
+		Util::IntrusivePtr<Node> remove_child(Node *node);
+		static Util::IntrusivePtr<Node> remove_node_from_hierarchy(Node *node);
 
 		const std::vector<Util::IntrusivePtr<Node>> &get_children() const
 		{
 			return children;
 		}
 
-		const std::vector<Util::IntrusivePtr<Node>> &get_skeletons() const
-		{
-			return skeletons;
-		}
-
 		std::vector<Util::IntrusivePtr<Node>> &get_children()
 		{
 			return children;
-		}
-
-		std::vector<Util::IntrusivePtr<Node>> &get_skeletons()
-		{
-			return skeletons;
 		}
 
 		Node *get_parent() const
@@ -100,12 +139,22 @@ public:
 
 		struct Skinning
 		{
+			CachedSkinTransform cached_skin_transform;
+			std::vector<const CachedTransform *> cached_skin;
 			std::vector<Transform *> skin;
-			std::vector<CachedTransform *> cached_skin;
+			std::vector<mat4> inverse_bind_poses;
+			std::vector<Util::IntrusivePtr<Node>> skeletons;
 			Util::Hash skin_compat = 0;
 		};
 
-		Skinning &get_skin()
+		inline void set_skin(Skinning *skinning_)
+		{
+			if (skinning)
+				parent_scene->skinning_pool.free(skinning);
+			skinning = skinning_;
+		}
+
+		inline Skinning *get_skin()
 		{
 			return skinning;
 		}
@@ -124,8 +173,6 @@ public:
 			return ret;
 		}
 
-		mat4 initial_transform = mat4(1.0f);
-
 		void update_timestamp()
 		{
 			timestamp++;
@@ -138,21 +185,24 @@ public:
 
 	private:
 		std::vector<Util::IntrusivePtr<Node>> children;
-		std::vector<Util::IntrusivePtr<Node>> skeletons;
-		Skinning skinning;
+		Skinning *skinning = nullptr;
 		Node *parent = nullptr;
-
+		uint32_t timestamp = 0;
 		bool any_child_transform_dirty = true;
 		bool cached_transform_dirty = true;
-		uint32_t timestamp = 0;
 	};
 	using NodeHandle = Util::IntrusivePtr<Node>;
 	NodeHandle create_node();
-	NodeHandle create_skinned_node(const Importer::Skin &skin);
+	NodeHandle create_skinned_node(const SceneFormats::Skin &skin);
+
+	Util::ObjectPool<Node> &get_node_pool()
+	{
+		return node_pool;
+	}
 
 	void set_root_node(NodeHandle node)
 	{
-		root_node = node;
+		root_node = std::move(node);
 	}
 
 	NodeHandle get_root_node() const
@@ -160,28 +210,76 @@ public:
 		return root_node;
 	}
 
-	EntityHandle create_renderable(AbstractRenderableHandle renderable, Node *node);
-	EntityHandle create_entity();
+	Entity *create_renderable(AbstractRenderableHandle renderable, Node *node);
+	Entity *create_light(const SceneFormats::LightInfo &light, Node *node);
+	Entity *create_entity();
+	void destroy_entity(Entity *entity);
+	void queue_destroy_entity(Entity *entity);
+	void destroy_queued_entities();
+
+	template <typename T>
+	void remove_entities_with_component()
+	{
+		remove_entities_with_component(ComponentIDMapping::get_id<T>());
+	}
+
+	void remove_entities_with_component(ComponentType id);
 
 private:
 	EntityPool pool;
+	Util::ObjectPool<Node> node_pool;
+	Util::ObjectPool<Node::Skinning> skinning_pool;
 	NodeHandle root_node;
-	std::vector<std::tuple<BoundedComponent*, CachedSpatialTransformComponent*, CachedSpatialTransformTimestampComponent *>> &spatials;
-	std::vector<std::tuple<CachedSpatialTransformComponent*, RenderableComponent*, OpaqueComponent*>> &opaque;
-	std::vector<std::tuple<CachedSpatialTransformComponent*, RenderableComponent*, TransparentComponent*>> &transparent;
-	std::vector<std::tuple<CachedSpatialTransformComponent*, RenderableComponent*, CastsStaticShadowComponent*>> &static_shadowing;
-	std::vector<std::tuple<CachedSpatialTransformComponent*, RenderableComponent*, CastsDynamicShadowComponent*>> &dynamic_shadowing;
-	std::vector<std::tuple<RenderPassComponent*, RenderableComponent*, CastsDynamicShadowComponent*>> &render_pass_shadowing;
-	std::vector<std::tuple<UnboundedComponent*, RenderableComponent*>> &backgrounds;
-	std::vector<std::tuple<CameraComponent*, CachedTransformComponent*>> &cameras;
-	std::vector<std::tuple<PerFrameUpdateComponent*>> &per_frame_updates;
-	std::vector<std::tuple<PerFrameUpdateTransformComponent*, CachedSpatialTransformComponent*>> &per_frame_update_transforms;
-	std::vector<std::tuple<EnvironmentComponent*>> &environments;
-	std::vector<std::tuple<RenderPassSinkComponent*, RenderableComponent*, CullPlaneComponent*>> &render_pass_sinks;
-	std::vector<std::tuple<RenderPassComponent*>> &render_pass_creators;
-	std::vector<EntityHandle> nodes;
-	void update_transform_tree(Node &node, const mat4 &transform, bool parent_is_dirty);
+	const ComponentGroupVector<BoundedComponent, RenderInfoComponent, CachedSpatialTransformTimestampComponent> &spatials;
+	const ComponentGroupVector<RenderInfoComponent, RenderableComponent, CachedSpatialTransformTimestampComponent, OpaqueComponent> &opaque;
+	const ComponentGroupVector<RenderInfoComponent, RenderableComponent, CachedSpatialTransformTimestampComponent, TransparentComponent> &transparent;
+	const ComponentGroupVector<RenderInfoComponent, RenderableComponent, CachedSpatialTransformTimestampComponent, PositionalLightComponent> &positional_lights;
+	const ComponentGroupVector<RenderInfoComponent, RenderableComponent, CachedSpatialTransformTimestampComponent, CastsStaticShadowComponent> &static_shadowing;
+	const ComponentGroupVector<RenderInfoComponent, RenderableComponent, CachedSpatialTransformTimestampComponent, CastsDynamicShadowComponent> &dynamic_shadowing;
+	const ComponentGroupVector<RenderPassComponent, RenderableComponent, CachedSpatialTransformTimestampComponent, CastsDynamicShadowComponent> &render_pass_shadowing;
+	const ComponentGroupVector<UnboundedComponent, RenderableComponent> &backgrounds;
+	const ComponentGroupVector<CameraComponent, CachedTransformComponent> &cameras;
+	const ComponentGroupVector<DirectionalLightComponent, CachedTransformComponent> &directional_lights;
+	const ComponentGroupVector<AmbientLightComponent> &ambient_lights;
+	const ComponentGroupVector<PerFrameUpdateComponent> &per_frame_updates;
+	const ComponentGroupVector<PerFrameUpdateTransformComponent, RenderInfoComponent> &per_frame_update_transforms;
+	const ComponentGroupVector<EnvironmentComponent> &environments;
+	const ComponentGroupVector<RenderPassSinkComponent, RenderableComponent, CullPlaneComponent> &render_pass_sinks;
+	const ComponentGroupVector<RenderPassComponent> &render_pass_creators;
+	Util::IntrusiveList<Entity> entities;
+	Util::IntrusiveList<Entity> queued_entities;
+	void destroy_entities(Util::IntrusiveList<Entity> &entity_list);
 
-	void update_skinning(Node &node);
+	static void update_transform_tree(Node &node, const mat4 &transform, bool parent_is_dirty);
+	static void update_transform_tree_node(Node &node, const mat4 &transform);
+	static void update_skinning(Node &node);
+	struct NodeUpdateState
+	{
+		bool self;
+		bool children;
+	};
+	static NodeUpdateState update_node_state(Node &node, bool parent_is_dirty);
+
+	struct TraversalState
+	{
+		enum { BatchSize = 1024 };
+		TraversalState() = default;
+
+		Node *pending[BatchSize];
+		const mat4 *parent_transforms[BatchSize];
+		bool parent_is_dirty[BatchSize];
+		TaskGroupHandle traversal_done_dependency;
+		size_t pending_count = 0;
+		ThreadGroup *group = nullptr;
+		const mat4 *single_parent_transform = nullptr;
+		Util::IntrusivePtr<Node> *pending_list = nullptr;
+		bool single_parent_is_dirty = false;
+		bool single_parent = false;
+	};
+	Util::ThreadSafeObjectPool<TraversalState> traversal_state_pool;
+	void dispatch_collect_children(TraversalState *state);
+	TaskGroupHandle dispatch_per_node_work(TraversalState *state);
+
+	void update_cached_transforms_range(size_t start_index, size_t end_index);
 };
 }

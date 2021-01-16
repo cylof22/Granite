@@ -1,4 +1,4 @@
-/* Copyright (c) 2017 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2020 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -25,10 +25,10 @@
 
 namespace Vulkan
 {
-Sampler::Sampler(Device *device, VkSampler sampler, const SamplerCreateInfo &info)
-    : Cookie(device)
-    , device(device)
-    , sampler(sampler)
+Sampler::Sampler(Device *device_, VkSampler sampler_, const SamplerCreateInfo &info)
+    : Cookie(device_)
+    , device(device_)
+    , sampler(sampler_)
     , create_info(info)
 {
 }
@@ -36,6 +36,16 @@ Sampler::Sampler(Device *device, VkSampler sampler, const SamplerCreateInfo &inf
 Sampler::~Sampler()
 {
 	if (sampler)
-		device->destroy_sampler(sampler);
+	{
+		if (internal_sync)
+			device->destroy_sampler_nolock(sampler);
+		else
+			device->destroy_sampler(sampler);
+	}
+}
+
+void SamplerDeleter::operator()(Sampler *sampler)
+{
+	sampler->device->handle_pool.samplers.free(sampler);
 }
 }

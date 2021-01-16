@@ -1,4 +1,4 @@
-/* Copyright (c) 2017 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2020 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -29,7 +29,7 @@
 #include "enum_cast.hpp"
 #include "sampler.hpp"
 #include "abstract_renderable.hpp"
-#include "hashmap.hpp"
+#include "hash.hpp"
 
 namespace Granite
 {
@@ -52,8 +52,8 @@ struct Material : public Util::IntrusivePtrEnabled<Material>
 	vec3 emissive = vec3(0.0f);
 	float roughness = 1.0f;
 	float metallic = 1.0f;
-	float lod_bias = 0.0f;
 	float normal_scale = 1.0f;
+	uint32_t shader_variant = 0;
 	DrawPipeline pipeline = DrawPipeline::Opaque;
 	Vulkan::StockSampler sampler = Vulkan::StockSampler::TrilinearWrap;
 	bool two_sided = false;
@@ -70,11 +70,11 @@ struct Material : public Util::IntrusivePtrEnabled<Material>
 			h.f32(emissive[i]);
 		h.f32(roughness);
 		h.f32(metallic);
-		h.f32(lod_bias);
 		h.f32(normal_scale);
 		h.u32(Util::ecast(pipeline));
 		h.u32(Util::ecast(sampler));
 		h.u32(two_sided);
+		h.u32(shader_variant);
 		hash = h.get();
 		needs_emissive = any(notEqual(emissive, vec3(0.0f)));
 	}
@@ -99,6 +99,11 @@ enum MaterialTextureFlagBits
 	MATERIAL_EMISSIVE_BIT = 1u << 5,
 	MATERIAL_EMISSIVE_REFRACTION_BIT = 1u << 6,
 	MATERIAL_EMISSIVE_REFLECTION_BIT = 1u << 7
+};
+
+enum MaterialShaderVariantFlagBits
+{
+	MATERIAL_SHADER_VARIANT_BANDLIMITED_PIXEL_BIT = 1 << 0
 };
 
 using MaterialHandle = Util::IntrusivePtr<Material>;

@@ -1,4 +1,4 @@
-/* Copyright (c) 2017 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2020 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -22,12 +22,120 @@
 
 #pragma once
 
-#include "vulkan.hpp"
+#include "vulkan_headers.hpp"
+#include "texture_format.hpp"
 
 namespace Vulkan
 {
+enum class FormatCompressionType
+{
+	Uncompressed,
+	BC,
+	ETC,
+	ASTC
+};
 
-static inline bool format_is_depth(VkFormat format)
+static inline FormatCompressionType format_compression_type(VkFormat format)
+{
+	switch (format)
+	{
+	case VK_FORMAT_BC1_RGBA_SRGB_BLOCK:
+	case VK_FORMAT_BC1_RGBA_UNORM_BLOCK:
+	case VK_FORMAT_BC1_RGB_SRGB_BLOCK:
+	case VK_FORMAT_BC1_RGB_UNORM_BLOCK:
+	case VK_FORMAT_BC2_SRGB_BLOCK:
+	case VK_FORMAT_BC2_UNORM_BLOCK:
+	case VK_FORMAT_BC3_SRGB_BLOCK:
+	case VK_FORMAT_BC3_UNORM_BLOCK:
+	case VK_FORMAT_BC4_UNORM_BLOCK:
+	case VK_FORMAT_BC4_SNORM_BLOCK:
+	case VK_FORMAT_BC5_UNORM_BLOCK:
+	case VK_FORMAT_BC5_SNORM_BLOCK:
+	case VK_FORMAT_BC6H_SFLOAT_BLOCK:
+	case VK_FORMAT_BC6H_UFLOAT_BLOCK:
+	case VK_FORMAT_BC7_SRGB_BLOCK:
+	case VK_FORMAT_BC7_UNORM_BLOCK:
+		return FormatCompressionType::BC;
+
+	case VK_FORMAT_ETC2_R8G8B8A1_SRGB_BLOCK:
+	case VK_FORMAT_ETC2_R8G8B8A1_UNORM_BLOCK:
+	case VK_FORMAT_ETC2_R8G8B8A8_SRGB_BLOCK:
+	case VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK:
+	case VK_FORMAT_ETC2_R8G8B8_SRGB_BLOCK:
+	case VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK:
+	case VK_FORMAT_EAC_R11G11_SNORM_BLOCK:
+	case VK_FORMAT_EAC_R11G11_UNORM_BLOCK:
+	case VK_FORMAT_EAC_R11_SNORM_BLOCK:
+	case VK_FORMAT_EAC_R11_UNORM_BLOCK:
+		return FormatCompressionType::ETC;
+
+#define astc_fmt(w, h) \
+	case VK_FORMAT_ASTC_##w##x##h##_UNORM_BLOCK: \
+	case VK_FORMAT_ASTC_##w##x##h##_SRGB_BLOCK: \
+	case VK_FORMAT_ASTC_##w##x##h##_SFLOAT_BLOCK_EXT
+	astc_fmt(4, 4):
+	astc_fmt(5, 4):
+	astc_fmt(5, 5):
+	astc_fmt(6, 5):
+	astc_fmt(6, 6):
+	astc_fmt(8, 5):
+	astc_fmt(8, 6):
+	astc_fmt(8, 8):
+	astc_fmt(10, 5):
+	astc_fmt(10, 6):
+	astc_fmt(10, 8):
+	astc_fmt(10, 10):
+	astc_fmt(12, 10):
+	astc_fmt(12, 12):
+		return FormatCompressionType::ASTC;
+#undef astc_fmt
+
+	default:
+		return FormatCompressionType::Uncompressed;
+	}
+}
+
+static inline bool format_is_srgb(VkFormat format)
+{
+	switch (format)
+	{
+	case VK_FORMAT_A8B8G8R8_SRGB_PACK32:
+	case VK_FORMAT_R8G8B8A8_SRGB:
+	case VK_FORMAT_B8G8R8A8_SRGB:
+	case VK_FORMAT_R8_SRGB:
+	case VK_FORMAT_R8G8_SRGB:
+	case VK_FORMAT_R8G8B8_SRGB:
+	case VK_FORMAT_B8G8R8_SRGB:
+	case VK_FORMAT_BC1_RGB_SRGB_BLOCK:
+	case VK_FORMAT_BC1_RGBA_SRGB_BLOCK:
+	case VK_FORMAT_BC2_SRGB_BLOCK:
+	case VK_FORMAT_BC3_SRGB_BLOCK:
+	case VK_FORMAT_BC7_SRGB_BLOCK:
+	case VK_FORMAT_ETC2_R8G8B8_SRGB_BLOCK:
+	case VK_FORMAT_ETC2_R8G8B8A1_SRGB_BLOCK:
+	case VK_FORMAT_ETC2_R8G8B8A8_SRGB_BLOCK:
+	case VK_FORMAT_ASTC_4x4_SRGB_BLOCK:
+	case VK_FORMAT_ASTC_5x4_SRGB_BLOCK:
+	case VK_FORMAT_ASTC_5x5_SRGB_BLOCK:
+	case VK_FORMAT_ASTC_6x5_SRGB_BLOCK:
+	case VK_FORMAT_ASTC_6x6_SRGB_BLOCK:
+	case VK_FORMAT_ASTC_8x5_SRGB_BLOCK:
+	case VK_FORMAT_ASTC_8x6_SRGB_BLOCK:
+	case VK_FORMAT_ASTC_8x8_SRGB_BLOCK:
+	case VK_FORMAT_ASTC_10x5_SRGB_BLOCK:
+	case VK_FORMAT_ASTC_10x6_SRGB_BLOCK:
+	case VK_FORMAT_ASTC_10x8_SRGB_BLOCK:
+	case VK_FORMAT_ASTC_10x10_SRGB_BLOCK:
+	case VK_FORMAT_ASTC_12x10_SRGB_BLOCK:
+	case VK_FORMAT_ASTC_12x12_SRGB_BLOCK:
+		return true;
+
+	default:
+		return false;
+	}
+}
+
+static inline bool format_has_depth_aspect(VkFormat format)
 {
 	switch (format)
 	{
@@ -44,10 +152,13 @@ static inline bool format_is_depth(VkFormat format)
 	}
 }
 
-static inline bool format_is_stencil(VkFormat format)
+static inline bool format_has_stencil_aspect(VkFormat format)
 {
 	switch (format)
 	{
+	case VK_FORMAT_D16_UNORM_S8_UINT:
+	case VK_FORMAT_D24_UNORM_S8_UINT:
+	case VK_FORMAT_D32_SFLOAT_S8_UINT:
 	case VK_FORMAT_S8_UINT:
 		return true;
 
@@ -56,9 +167,9 @@ static inline bool format_is_stencil(VkFormat format)
 	}
 }
 
-static inline bool format_is_depth_stencil(VkFormat format)
+static inline bool format_has_depth_or_stencil_aspect(VkFormat format)
 {
-	return format_is_depth(format) || format_is_stencil(format);
+	return format_has_depth_aspect(format) || format_has_stencil_aspect(format);
 }
 
 static inline VkImageAspectFlags format_to_aspect_mask(VkFormat format)
@@ -86,78 +197,10 @@ static inline VkImageAspectFlags format_to_aspect_mask(VkFormat format)
 	}
 }
 
-static inline void format_block_dim(VkFormat format, uint32_t &width, uint32_t &height)
-{
-#define fmt(x, w, h)     \
-	case VK_FORMAT_##x: \
-		width = w; \
-		height = h; \
-		break
-
-	switch (format)
-	{
-	fmt(ETC2_R8G8B8A8_UNORM_BLOCK, 4, 4);
-	fmt(ETC2_R8G8B8A8_SRGB_BLOCK, 4, 4);
-	fmt(ETC2_R8G8B8A1_UNORM_BLOCK, 4, 4);
-	fmt(ETC2_R8G8B8A1_SRGB_BLOCK, 4, 4);
-	fmt(ETC2_R8G8B8_UNORM_BLOCK, 4, 4);
-	fmt(ETC2_R8G8B8_SRGB_BLOCK, 4, 4);
-	fmt(EAC_R11_UNORM_BLOCK, 4, 4);
-	fmt(EAC_R11_SNORM_BLOCK, 4, 4);
-	fmt(EAC_R11G11_UNORM_BLOCK, 4, 4);
-	fmt(EAC_R11G11_SNORM_BLOCK, 4, 4);
-
-	fmt(BC1_RGB_UNORM_BLOCK, 4, 4);
-	fmt(BC1_RGB_SRGB_BLOCK, 4, 4);
-	fmt(BC1_RGBA_UNORM_BLOCK, 4, 4);
-	fmt(BC1_RGBA_SRGB_BLOCK, 4, 4);
-	fmt(BC2_UNORM_BLOCK, 4, 4);
-	fmt(BC2_SRGB_BLOCK, 4, 4);
-	fmt(BC3_UNORM_BLOCK, 4, 4);
-	fmt(BC3_SRGB_BLOCK, 4, 4);
-
-	fmt(ASTC_4x4_SRGB_BLOCK, 4, 4);
-	fmt(ASTC_5x4_SRGB_BLOCK, 5, 4);
-	fmt(ASTC_5x5_SRGB_BLOCK, 5, 5);
-	fmt(ASTC_6x5_SRGB_BLOCK, 6, 5);
-	fmt(ASTC_6x6_SRGB_BLOCK, 6, 6);
-	fmt(ASTC_8x5_SRGB_BLOCK, 8, 5);
-	fmt(ASTC_8x6_SRGB_BLOCK, 8, 6);
-	fmt(ASTC_8x8_SRGB_BLOCK, 8, 8);
-	fmt(ASTC_10x5_SRGB_BLOCK, 10, 5);
-	fmt(ASTC_10x6_SRGB_BLOCK, 10, 6);
-	fmt(ASTC_10x8_SRGB_BLOCK, 10, 8);
-	fmt(ASTC_10x10_SRGB_BLOCK, 10, 10);
-	fmt(ASTC_12x10_SRGB_BLOCK, 12, 10);
-	fmt(ASTC_12x12_SRGB_BLOCK, 12, 12);
-	fmt(ASTC_4x4_UNORM_BLOCK, 4, 4);
-	fmt(ASTC_5x4_UNORM_BLOCK, 5, 4);
-	fmt(ASTC_5x5_UNORM_BLOCK, 5, 5);
-	fmt(ASTC_6x5_UNORM_BLOCK, 6, 5);
-	fmt(ASTC_6x6_UNORM_BLOCK, 6, 6);
-	fmt(ASTC_8x5_UNORM_BLOCK, 8, 5);
-	fmt(ASTC_8x6_UNORM_BLOCK, 8, 6);
-	fmt(ASTC_8x8_UNORM_BLOCK, 8, 8);
-	fmt(ASTC_10x5_UNORM_BLOCK, 10, 5);
-	fmt(ASTC_10x6_UNORM_BLOCK, 10, 6);
-	fmt(ASTC_10x8_UNORM_BLOCK, 10, 8);
-	fmt(ASTC_10x10_UNORM_BLOCK, 10, 10);
-	fmt(ASTC_12x10_UNORM_BLOCK, 12, 10);
-	fmt(ASTC_12x12_UNORM_BLOCK, 12, 12);
-
-	default:
-		width = 1;
-		height = 1;
-		break;
-	}
-
-#undef fmt
-}
-
 static inline void format_align_dim(VkFormat format, uint32_t &width, uint32_t &height)
 {
 	uint32_t align_width, align_height;
-	format_block_dim(format, align_width, align_height);
+	TextureFormatLayout::format_block_dim(format, align_width, align_height);
 	width = ((width + align_width - 1) / align_width) * align_width;
 	height = ((height + align_height - 1) / align_height) * align_height;
 }
@@ -165,198 +208,164 @@ static inline void format_align_dim(VkFormat format, uint32_t &width, uint32_t &
 static inline void format_num_blocks(VkFormat format, uint32_t &width, uint32_t &height)
 {
 	uint32_t align_width, align_height;
-	format_block_dim(format, align_width, align_height);
+	TextureFormatLayout::format_block_dim(format, align_width, align_height);
 	width = (width + align_width - 1) / align_width;
 	height = (height + align_height - 1) / align_height;
 }
 
-static inline uint32_t format_block_size(VkFormat format)
+static inline VkDeviceSize format_get_layer_size(VkFormat format, VkImageAspectFlags aspect, unsigned width, unsigned height, unsigned depth)
 {
-#define fmt(x, bpp)     \
-	case VK_FORMAT_##x: \
-		return bpp
+	uint32_t blocks_x = width;
+	uint32_t blocks_y = height;
+	format_num_blocks(format, blocks_x, blocks_y);
+	format_align_dim(format, width, height);
+
+	VkDeviceSize size = TextureFormatLayout::format_block_size(format, aspect) * depth * blocks_x * blocks_y;
+	return size;
+}
+
+enum class YCbCrFormat
+{
+	YUV420P_3PLANE,
+	YUV444P_3PLANE,
+	YUV422P_3PLANE,
+	Count
+};
+
+static inline unsigned format_ycbcr_num_planes(VkFormat format)
+{
 	switch (format)
 	{
-	fmt(R4G4_UNORM_PACK8, 1);
-	fmt(R4G4B4A4_UNORM_PACK16, 2);
-	fmt(B4G4R4A4_UNORM_PACK16, 2);
-	fmt(R5G6B5_UNORM_PACK16, 2);
-	fmt(B5G6R5_UNORM_PACK16, 2);
-	fmt(R5G5B5A1_UNORM_PACK16, 2);
-	fmt(B5G5R5A1_UNORM_PACK16, 2);
-	fmt(A1R5G5B5_UNORM_PACK16, 2);
-	fmt(R8_UNORM, 1);
-	fmt(R8_SNORM, 1);
-	fmt(R8_USCALED, 1);
-	fmt(R8_SSCALED, 1);
-	fmt(R8_UINT, 1);
-	fmt(R8_SINT, 1);
-	fmt(R8_SRGB, 1);
-	fmt(R8G8_UNORM, 2);
-	fmt(R8G8_SNORM, 2);
-	fmt(R8G8_USCALED, 2);
-	fmt(R8G8_SSCALED, 2);
-	fmt(R8G8_UINT, 2);
-	fmt(R8G8_SINT, 2);
-	fmt(R8G8_SRGB, 2);
-	fmt(R8G8B8_UNORM, 3);
-	fmt(R8G8B8_SNORM, 3);
-	fmt(R8G8B8_USCALED, 3);
-	fmt(R8G8B8_SSCALED, 3);
-	fmt(R8G8B8_UINT, 3);
-	fmt(R8G8B8_SINT, 3);
-	fmt(R8G8B8_SRGB, 3);
-	fmt(R8G8B8A8_UNORM, 4);
-	fmt(R8G8B8A8_SNORM, 4);
-	fmt(R8G8B8A8_USCALED, 4);
-	fmt(R8G8B8A8_SSCALED, 4);
-	fmt(R8G8B8A8_UINT, 4);
-	fmt(R8G8B8A8_SINT, 4);
-	fmt(R8G8B8A8_SRGB, 4);
-	fmt(B8G8R8A8_UNORM, 4);
-	fmt(B8G8R8A8_SNORM, 4);
-	fmt(B8G8R8A8_USCALED, 4);
-	fmt(B8G8R8A8_SSCALED, 4);
-	fmt(B8G8R8A8_UINT, 4);
-	fmt(B8G8R8A8_SINT, 4);
-	fmt(B8G8R8A8_SRGB, 4);
-	fmt(A8B8G8R8_UNORM_PACK32, 4);
-	fmt(A8B8G8R8_SNORM_PACK32, 4);
-	fmt(A8B8G8R8_USCALED_PACK32, 4);
-	fmt(A8B8G8R8_SSCALED_PACK32, 4);
-	fmt(A8B8G8R8_UINT_PACK32, 4);
-	fmt(A8B8G8R8_SINT_PACK32, 4);
-	fmt(A8B8G8R8_SRGB_PACK32, 4);
-	fmt(A2B10G10R10_UNORM_PACK32, 4);
-	fmt(A2B10G10R10_SNORM_PACK32, 4);
-	fmt(A2B10G10R10_USCALED_PACK32, 4);
-	fmt(A2B10G10R10_SSCALED_PACK32, 4);
-	fmt(A2B10G10R10_UINT_PACK32, 4);
-	fmt(A2B10G10R10_SINT_PACK32, 4);
-	fmt(A2R10G10B10_UNORM_PACK32, 4);
-	fmt(A2R10G10B10_SNORM_PACK32, 4);
-	fmt(A2R10G10B10_USCALED_PACK32, 4);
-	fmt(A2R10G10B10_SSCALED_PACK32, 4);
-	fmt(A2R10G10B10_UINT_PACK32, 4);
-	fmt(A2R10G10B10_SINT_PACK32, 4);
-	fmt(R16_UNORM, 2);
-	fmt(R16_SNORM, 2);
-	fmt(R16_USCALED, 2);
-	fmt(R16_SSCALED, 2);
-	fmt(R16_UINT, 2);
-	fmt(R16_SINT, 2);
-	fmt(R16_SFLOAT, 2);
-	fmt(R16G16_UNORM, 4);
-	fmt(R16G16_SNORM, 4);
-	fmt(R16G16_USCALED, 4);
-	fmt(R16G16_SSCALED, 4);
-	fmt(R16G16_UINT, 4);
-	fmt(R16G16_SINT, 4);
-	fmt(R16G16_SFLOAT, 4);
-	fmt(R16G16B16_UNORM, 6);
-	fmt(R16G16B16_SNORM, 6);
-	fmt(R16G16B16_USCALED, 6);
-	fmt(R16G16B16_SSCALED, 6);
-	fmt(R16G16B16_UINT, 6);
-	fmt(R16G16B16_SINT, 6);
-	fmt(R16G16B16_SFLOAT, 6);
-	fmt(R16G16B16A16_UNORM, 8);
-	fmt(R16G16B16A16_SNORM, 8);
-	fmt(R16G16B16A16_USCALED, 8);
-	fmt(R16G16B16A16_SSCALED, 8);
-	fmt(R16G16B16A16_UINT, 8);
-	fmt(R16G16B16A16_SINT, 8);
-	fmt(R16G16B16A16_SFLOAT, 8);
-	fmt(R32_UINT, 4);
-	fmt(R32_SINT, 4);
-	fmt(R32_SFLOAT, 4);
-	fmt(R32G32_UINT, 8);
-	fmt(R32G32_SINT, 8);
-	fmt(R32G32_SFLOAT, 8);
-	fmt(R32G32B32_UINT, 12);
-	fmt(R32G32B32_SINT, 12);
-	fmt(R32G32B32_SFLOAT, 12);
-	fmt(R32G32B32A32_UINT, 16);
-	fmt(R32G32B32A32_SINT, 16);
-	fmt(R32G32B32A32_SFLOAT, 16);
-	fmt(R64_UINT, 8);
-	fmt(R64_SINT, 8);
-	fmt(R64_SFLOAT, 8);
-	fmt(R64G64_UINT, 16);
-	fmt(R64G64_SINT, 16);
-	fmt(R64G64_SFLOAT, 16);
-	fmt(R64G64B64_UINT, 24);
-	fmt(R64G64B64_SINT, 24);
-	fmt(R64G64B64_SFLOAT, 24);
-	fmt(R64G64B64A64_UINT, 32);
-	fmt(R64G64B64A64_SINT, 32);
-	fmt(R64G64B64A64_SFLOAT, 32);
-	fmt(B10G11R11_UFLOAT_PACK32, 4);
-	fmt(E5B9G9R9_UFLOAT_PACK32, 4);
-	fmt(D16_UNORM, 2);
-	fmt(X8_D24_UNORM_PACK32, 4);
-	fmt(D32_SFLOAT, 4);
-	fmt(S8_UINT, 1);
-	fmt(D16_UNORM_S8_UINT, 3); // Doesn't make sense.
-	fmt(D24_UNORM_S8_UINT, 4);
-	fmt(D32_SFLOAT_S8_UINT, 5); // Doesn't make sense.
+	case VK_FORMAT_G8_B8_R8_3PLANE_420_UNORM:
+	case VK_FORMAT_G8_B8_R8_3PLANE_422_UNORM:
+	case VK_FORMAT_G8_B8_R8_3PLANE_444_UNORM:
+	case VK_FORMAT_G16_B16_R16_3PLANE_420_UNORM:
+	case VK_FORMAT_G16_B16_R16_3PLANE_422_UNORM:
+	case VK_FORMAT_G16_B16_R16_3PLANE_444_UNORM:
+	case VK_FORMAT_G10X6_B10X6_R10X6_3PLANE_420_UNORM_3PACK16:
+	case VK_FORMAT_G10X6_B10X6_R10X6_3PLANE_422_UNORM_3PACK16:
+	case VK_FORMAT_G10X6_B10X6_R10X6_3PLANE_444_UNORM_3PACK16:
+	case VK_FORMAT_G12X4_B12X4_R12X4_3PLANE_420_UNORM_3PACK16:
+	case VK_FORMAT_G12X4_B12X4_R12X4_3PLANE_422_UNORM_3PACK16:
+	case VK_FORMAT_G12X4_B12X4_R12X4_3PLANE_444_UNORM_3PACK16:
+		return 3;
 
-	// ETC2
-	fmt(ETC2_R8G8B8A8_UNORM_BLOCK, 16);
-	fmt(ETC2_R8G8B8A8_SRGB_BLOCK, 16);
-	fmt(ETC2_R8G8B8A1_UNORM_BLOCK, 8);
-	fmt(ETC2_R8G8B8A1_SRGB_BLOCK, 8);
-	fmt(ETC2_R8G8B8_UNORM_BLOCK, 8);
-	fmt(ETC2_R8G8B8_SRGB_BLOCK, 8);
-	fmt(EAC_R11_UNORM_BLOCK, 8);
-	fmt(EAC_R11_SNORM_BLOCK, 8);
-	fmt(EAC_R11G11_UNORM_BLOCK, 16);
-	fmt(EAC_R11G11_SNORM_BLOCK, 16);
-
-	// BC
-	fmt(BC1_RGB_UNORM_BLOCK, 8);
-	fmt(BC1_RGB_SRGB_BLOCK, 8);
-	fmt(BC1_RGBA_UNORM_BLOCK, 8);
-	fmt(BC1_RGBA_SRGB_BLOCK, 8);
-	fmt(BC2_UNORM_BLOCK, 16);
-	fmt(BC2_SRGB_BLOCK, 16);
-	fmt(BC3_UNORM_BLOCK, 16);
-	fmt(BC3_SRGB_BLOCK, 16);
-
-	// ASTC
-	fmt(ASTC_4x4_SRGB_BLOCK, 16);
-	fmt(ASTC_5x4_SRGB_BLOCK, 16);
-	fmt(ASTC_5x5_SRGB_BLOCK, 16);
-	fmt(ASTC_6x5_SRGB_BLOCK, 16);
-	fmt(ASTC_6x6_SRGB_BLOCK, 16);
-	fmt(ASTC_8x5_SRGB_BLOCK, 16);
-	fmt(ASTC_8x6_SRGB_BLOCK, 16);
-	fmt(ASTC_8x8_SRGB_BLOCK, 16);
-	fmt(ASTC_10x5_SRGB_BLOCK, 16);
-	fmt(ASTC_10x6_SRGB_BLOCK, 16);
-	fmt(ASTC_10x8_SRGB_BLOCK, 16);
-	fmt(ASTC_10x10_SRGB_BLOCK, 16);
-	fmt(ASTC_12x10_SRGB_BLOCK, 16);
-	fmt(ASTC_12x12_SRGB_BLOCK, 16);
-	fmt(ASTC_4x4_UNORM_BLOCK, 16);
-	fmt(ASTC_5x4_UNORM_BLOCK, 16);
-	fmt(ASTC_5x5_UNORM_BLOCK, 16);
-	fmt(ASTC_6x5_UNORM_BLOCK, 16);
-	fmt(ASTC_6x6_UNORM_BLOCK, 16);
-	fmt(ASTC_8x5_UNORM_BLOCK, 16);
-	fmt(ASTC_8x6_UNORM_BLOCK, 16);
-	fmt(ASTC_8x8_UNORM_BLOCK, 16);
-	fmt(ASTC_10x5_UNORM_BLOCK, 16);
-	fmt(ASTC_10x6_UNORM_BLOCK, 16);
-	fmt(ASTC_10x8_UNORM_BLOCK, 16);
-	fmt(ASTC_10x10_UNORM_BLOCK, 16);
-	fmt(ASTC_12x10_UNORM_BLOCK, 16);
-	fmt(ASTC_12x12_UNORM_BLOCK, 16);
+	case VK_FORMAT_G8_B8R8_2PLANE_420_UNORM:
+	case VK_FORMAT_G8_B8R8_2PLANE_422_UNORM:
+	case VK_FORMAT_G16_B16R16_2PLANE_420_UNORM:
+	case VK_FORMAT_G16_B16R16_2PLANE_422_UNORM:
+	case VK_FORMAT_G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16:
+	case VK_FORMAT_G10X6_B10X6R10X6_2PLANE_422_UNORM_3PACK16:
+	case VK_FORMAT_G12X4_B12X4R12X4_2PLANE_420_UNORM_3PACK16:
+	case VK_FORMAT_G12X4_B12X4R12X4_2PLANE_422_UNORM_3PACK16:
+		return 2;
 
 	default:
-		VK_ASSERT(0 && "Unknown format.");
+		return 1;
+	}
+}
+
+static inline unsigned format_ycbcr_num_planes(YCbCrFormat format)
+{
+	switch (format)
+	{
+	case YCbCrFormat::YUV420P_3PLANE:
+	case YCbCrFormat::YUV422P_3PLANE:
+	case YCbCrFormat::YUV444P_3PLANE:
+		return 3;
+
+	default:
 		return 0;
+	}
+}
+
+static inline void format_ycbcr_downsample_dimensions(VkFormat format, VkImageAspectFlags aspect, uint32_t &width, uint32_t &height)
+{
+	if (aspect == VK_IMAGE_ASPECT_PLANE_0_BIT)
+		return;
+
+	switch (format)
+	{
+#define fmt(x, sub0, sub1) \
+	case VK_FORMAT_##x: \
+		width >>= sub0; \
+		height >>= sub1; \
+		break
+
+		fmt(G8_B8_R8_3PLANE_420_UNORM, 1, 1);
+		fmt(G8_B8R8_2PLANE_420_UNORM, 1, 1);
+		fmt(G8_B8_R8_3PLANE_422_UNORM, 1, 0);
+		fmt(G8_B8R8_2PLANE_422_UNORM, 1, 0);
+		fmt(G8_B8_R8_3PLANE_444_UNORM, 0, 0);
+
+		fmt(G10X6_B10X6_R10X6_3PLANE_420_UNORM_3PACK16, 1, 1);
+		fmt(G10X6_B10X6_R10X6_3PLANE_422_UNORM_3PACK16, 1, 0);
+		fmt(G10X6_B10X6_R10X6_3PLANE_444_UNORM_3PACK16, 0, 0);
+		fmt(G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16, 1, 1);
+		fmt(G10X6_B10X6R10X6_2PLANE_422_UNORM_3PACK16, 1, 0);
+
+		fmt(G12X4_B12X4_R12X4_3PLANE_420_UNORM_3PACK16, 1, 1);
+		fmt(G12X4_B12X4_R12X4_3PLANE_422_UNORM_3PACK16, 1, 0);
+		fmt(G12X4_B12X4_R12X4_3PLANE_444_UNORM_3PACK16, 0, 0);
+		fmt(G12X4_B12X4R12X4_2PLANE_420_UNORM_3PACK16, 1, 1);
+		fmt(G12X4_B12X4R12X4_2PLANE_422_UNORM_3PACK16, 1, 0);
+
+		fmt(G16_B16_R16_3PLANE_420_UNORM, 1, 1);
+		fmt(G16_B16_R16_3PLANE_422_UNORM, 1, 0);
+		fmt(G16_B16_R16_3PLANE_444_UNORM, 0, 0);
+		fmt(G16_B16R16_2PLANE_420_UNORM, 1, 1);
+		fmt(G16_B16R16_2PLANE_422_UNORM, 1, 0);
+
+	default:
+		break;
 	}
 #undef fmt
 }
+
+static inline unsigned format_ycbcr_downsample_ratio_log2(YCbCrFormat format, unsigned dim, unsigned plane)
+{
+	switch (format)
+	{
+	case YCbCrFormat::YUV420P_3PLANE:
+		return plane > 0 ? 1 : 0;
+	case YCbCrFormat::YUV422P_3PLANE:
+		return plane > 0 && dim == 0 ? 1 : 0;
+
+	default:
+		return 0;
+	}
+}
+
+static inline VkFormat format_ycbcr_plane_vk_format(YCbCrFormat format, unsigned plane)
+{
+	switch (format)
+	{
+	case YCbCrFormat::YUV420P_3PLANE:
+		return VK_FORMAT_R8_UNORM;
+	case YCbCrFormat::YUV422P_3PLANE:
+		return plane > 0 ? VK_FORMAT_R8G8_UNORM : VK_FORMAT_R8_UNORM;
+	case YCbCrFormat::YUV444P_3PLANE:
+		return VK_FORMAT_R8_UNORM;
+
+	default:
+		return VK_FORMAT_UNDEFINED;
+	}
+}
+
+static inline VkFormat format_ycbcr_planar_vk_format(YCbCrFormat format)
+{
+	switch (format)
+	{
+	case YCbCrFormat::YUV420P_3PLANE:
+		return VK_FORMAT_G8_B8_R8_3PLANE_420_UNORM;
+	case YCbCrFormat::YUV422P_3PLANE:
+		return VK_FORMAT_G8_B8_R8_3PLANE_422_UNORM;
+	case YCbCrFormat::YUV444P_3PLANE:
+		return VK_FORMAT_G8_B8_R8_3PLANE_444_UNORM;
+
+	default:
+		return VK_FORMAT_UNDEFINED;
+	}
+}
+
 }

@@ -1,4 +1,4 @@
-/* Copyright (c) 2017 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2020 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -23,8 +23,11 @@
 #include "compiler.hpp"
 #include <shaderc/shaderc.hpp>
 #include <path.hpp>
-#include "util.hpp"
+#include "logging.hpp"
 #include "filesystem.hpp"
+#include "string_helpers.hpp"
+
+#include "spirv-tools/libspirv.hpp"
 
 using namespace std;
 
@@ -47,21 +50,56 @@ Stage GLSLCompiler::stage_from_path(const std::string &path)
 	else if (ext == "comp")
 		return Stage::Compute;
 	else
-		throw logic_error("invalid extension");
+		return Stage::Unknown;
 }
 
-void GLSLCompiler::set_source_from_file(const string &path)
+bool GLSLCompiler::set_source_from_file(const string &path)
 {
-	if (!Filesystem::get().read_file_to_string(path, source))
-		throw runtime_error("Failed to load shader.");
+	if (!Global::filesystem()->read_file_to_string(path, source))
+	{
+		LOGE("Failed to load shader: %s\n", path.c_str());
+		return false;
+	}
 
 	source_path = path;
 	stage = stage_from_path(path);
+	return stage != Stage::Unknown;
 }
 
-bool GLSLCompiler::parse_variants(const string &source, const string &path)
+void GLSLCompiler::set_include_directories(const std::vector<std::string> *include_directories_)
 {
-	auto lines = Util::split(source, "\n");
+	include_directories = include_directories_;
+}
+
+bool GLSLCompiler::find_include_path(const string &source_path_, const string &include_path,
+                                     string &included_path, string &included_source)
+{
+	auto relpath = Path::relpath(source_path_, include_path);
+	if (Global::filesystem()->read_file_to_string(relpath, included_source))
+	{
+		included_path = relpath;
+		return true;
+	}
+
+	if (include_directories)
+	{
+		for (auto &include_dir : *include_directories)
+		{
+			auto path = Path::join(include_dir, include_path);
+			if (Global::filesystem()->read_file_to_string(path, included_source))
+			{
+				included_path = path;
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
+bool GLSLCompiler::parse_variants(const string &source_, const string &path)
+{
+	auto lines = Util::split(source_, "\n");
 
 	unsigned line_index = 0;
 	for (auto &line : lines)
@@ -72,9 +110,8 @@ bool GLSLCompiler::parse_variants(const string &source, const string &path)
 			if (!include_path.empty() && include_path.back() == '"')
 				include_path.pop_back();
 
-			include_path = Path::relpath(path, include_path);
 			string included_source;
-			if (!Filesystem::get().read_file_to_string(include_path, included_source))
+			if (!find_include_path(path, include_path, include_path, included_source))
 			{
 				LOGE("Failed to include GLSL file: %s\n", include_path.c_str());
 				return false;
@@ -86,6 +123,18 @@ bool GLSLCompiler::parse_variants(const string &source, const string &path)
 			preprocessed_source += Util::join("#line ", line_index + 2, " \"", path, "\"\n");
 
 			dependencies.insert(include_path);
+		}
+		else if (line.find("#pragma optimize off") == 0)
+		{
+			optimization = Optimization::ForceOff;
+			preprocessed_source += "// #pragma optimize off";
+			preprocessed_source += '\n';
+		}
+		else if (line.find("#pragma optimize on") == 0)
+		{
+			optimization = Optimization::ForceOn;
+			preprocessed_source += "// #pragma optimize on";
+			preprocessed_source += '\n';
 		}
 		else
 		{
@@ -116,7 +165,7 @@ bool GLSLCompiler::preprocess()
 	return parse_variants(source, source_path);
 }
 
-vector<uint32_t> GLSLCompiler::compile(const vector<pair<string, int>> *defines)
+vector<uint32_t> GLSLCompiler::compile(std::string &error_message, const vector<pair<string, int>> *defines) const
 {
 	shaderc::Compiler compiler;
 	shaderc::CompileOptions options;
@@ -130,9 +179,26 @@ vector<uint32_t> GLSLCompiler::compile(const vector<pair<string, int>> *defines)
 		for (auto &define : *defines)
 			options.AddMacroDefinition(define.first, to_string(define.second));
 
-	options.SetGenerateDebugInfo();
+#if GRANITE_COMPILER_OPTIMIZE
+	if (optimization != Optimization::ForceOff)
+		options.SetOptimizationLevel(shaderc_optimization_level_performance);
+	else
+		options.SetOptimizationLevel(shaderc_optimization_level_zero);
+#else
 	options.SetOptimizationLevel(shaderc_optimization_level_zero);
-	options.SetTargetEnvironment(shaderc_target_env_vulkan, 1);
+#endif
+
+	if (!strip)
+	{
+		// Need this for some reflection purposes with immutable samplers.
+		options.SetGenerateDebugInfo();
+	}
+
+	options.SetTargetEnvironment(shaderc_target_env_vulkan,
+	                             target == Target::Vulkan11 ?
+	                             shaderc_env_version_vulkan_1_1 :
+	                             shaderc_env_version_vulkan_1_0);
+
 	options.SetSourceLanguage(shaderc_source_language_glsl);
 
 	shaderc_shader_kind kind;
@@ -161,6 +227,9 @@ vector<uint32_t> GLSLCompiler::compile(const vector<pair<string, int>> *defines)
 	case Stage::Compute:
 		kind = shaderc_glsl_compute_shader;
 		break;
+
+	default:
+		return {};
 	}
 	shaderc::SpvCompilationResult result = compiler.CompileGlslToSpv(preprocessed_source, kind, source_path.c_str(), options);
 
@@ -171,6 +240,22 @@ vector<uint32_t> GLSLCompiler::compile(const vector<pair<string, int>> *defines)
 		return {};
 	}
 
-	return { result.cbegin(), result.cend() };
+	vector<uint32_t> compiled_spirv(result.cbegin(), result.cend());
+
+	spvtools::SpirvTools core(target == Target::Vulkan11 ? SPV_ENV_VULKAN_1_1 : SPV_ENV_VULKAN_1_0);
+
+	core.SetMessageConsumer([&error_message](spv_message_level_t, const char *, const spv_position_t&, const char *message) {
+		error_message = message;
+	});
+
+	spvtools::ValidatorOptions opts;
+	opts.SetScalarBlockLayout(true);
+	if (!core.Validate(compiled_spirv.data(), compiled_spirv.size(), opts))
+	{
+		LOGE("Failed to validate SPIR-V.\n");
+		return {};
+	}
+
+	return compiled_spirv;
 }
 }

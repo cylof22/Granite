@@ -1,4 +1,4 @@
-/* Copyright (c) 2017 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2020 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -23,14 +23,18 @@
 #pragma once
 
 #include <stdint.h>
+#include "hash.hpp"
+#include "intrusive_hash_map.hpp"
 
 namespace Vulkan
 {
 class Device;
+
 class Cookie
 {
 public:
 	Cookie(Device *device);
+
 	uint64_t get_cookie() const
 	{
 		return cookie;
@@ -38,5 +42,20 @@ public:
 
 private:
 	uint64_t cookie;
+};
+
+template <typename T>
+using HashedObject = Util::IntrusiveHashMapEnabled<T>;
+
+class InternalSyncEnabled
+{
+public:
+	void set_internal_sync_object()
+	{
+		internal_sync = true;
+	}
+
+protected:
+	bool internal_sync = false;
 };
 }

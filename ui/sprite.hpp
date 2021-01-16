@@ -1,4 +1,4 @@
-/* Copyright (c) 2017 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2020 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -41,6 +41,8 @@ struct QuadData
 	float rotation[4];
 	uint8_t color[4];
 	float layer;
+	float array_layer;
+	float blend_factor;
 };
 
 struct SpriteInstanceInfo
@@ -51,7 +53,7 @@ struct SpriteInstanceInfo
 
 struct SpriteRenderInfo
 {
-	const Vulkan::ImageView *texture = nullptr;
+	const Vulkan::ImageView *textures[2] = {};
 	Vulkan::Program *program = nullptr;
 	Vulkan::StockSampler sampler;
 	ivec4 clip_quad = ivec4(0, 0, 0x4000, 0x4000);
@@ -61,14 +63,30 @@ struct Sprite : AbstractRenderable
 {
 	DrawPipeline pipeline = DrawPipeline::Opaque;
 	Vulkan::Texture *texture = nullptr;
+	Vulkan::Texture *texture_alt = nullptr;
 	Vulkan::StockSampler sampler = Vulkan::StockSampler::LinearWrap;
 
-	ivec2 tex_offset;
-	ivec2 size;
-	uint8_t color[4];
+	enum ShaderVariantFlagBits
+	{
+		BANDLIMITED_PIXEL_BIT = 1 << 0,
+		BLEND_TEXUTRE_BIT = 1 << 1,
+		LUMA_TO_ALPHA_BIT = 1 << 2,
+		CLEAR_ALPHA_TO_ZERO_BIT = 1 << 3,
+		ALPHA_TEXTURE_BIT = 1 << 4,
+		ARRAY_TEXTURE_BIT = 1 << 5
+	};
+	using ShaderVariantFlags = uint32_t;
+
+	ivec2 tex_offset = ivec2(0);
+	ivec2 size = ivec2(0);
+	uint8_t color[4] = { 0xff, 0xff, 0xff, 0xff };
+	float texture_blending_factor = 0.0f;
+	bool bandlimited_pixel = false;
+	bool luma_to_alpha = false;
+	bool clear_alpha_to_zero = false;
 
 	void get_sprite_render_info(const SpriteTransformInfo &transform, RenderQueue &queue) const override;
-	void get_render_info(const RenderContext &, const CachedSpatialTransformComponent *, RenderQueue &) const override
+	void get_render_info(const RenderContext &, const RenderInfoComponent *, RenderQueue &) const override
 	{
 	}
 

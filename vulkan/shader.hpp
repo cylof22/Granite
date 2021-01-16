@@ -1,4 +1,4 @@
-/* Copyright (c) 2017 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2020 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -24,10 +24,16 @@
 
 #include "cookie.hpp"
 #include "descriptor_set.hpp"
-#include "hashmap.hpp"
+#include "hash.hpp"
 #include "intrusive.hpp"
 #include "limits.hpp"
-#include "vulkan.hpp"
+#include "vulkan_headers.hpp"
+#include "enum_cast.hpp"
+
+namespace spirv_cross
+{
+struct SPIRType;
+}
 
 namespace Vulkan
 {
@@ -46,10 +52,11 @@ enum class ShaderStage
 
 struct ResourceLayout
 {
-	uint32_t attribute_mask = 0;
-	uint32_t render_target_mask = 0;
-	uint32_t push_constant_offset = 0;
-	uint32_t push_constant_range = 0;
+	uint32_t input_mask = 0;
+	uint32_t output_mask = 0;
+	uint32_t push_constant_size = 0;
+	uint32_t spec_constant_mask = 0;
+	uint32_t bindless_set_mask = 0;
 	DescriptorSetLayout sets[VULKAN_NUM_DESCRIPTOR_SETS];
 };
 
@@ -58,16 +65,42 @@ struct CombinedResourceLayout
 	uint32_t attribute_mask = 0;
 	uint32_t render_target_mask = 0;
 	DescriptorSetLayout sets[VULKAN_NUM_DESCRIPTOR_SETS] = {};
-	VkPushConstantRange ranges[static_cast<unsigned>(ShaderStage::Count)] = {};
-	uint32_t num_ranges = 0;
+	uint32_t stages_for_bindings[VULKAN_NUM_DESCRIPTOR_SETS][VULKAN_NUM_BINDINGS] = {};
+	uint32_t stages_for_sets[VULKAN_NUM_DESCRIPTOR_SETS] = {};
+	VkPushConstantRange push_constant_range = {};
 	uint32_t descriptor_set_mask = 0;
+	uint32_t bindless_descriptor_set_mask = 0;
+	uint32_t spec_constant_mask[Util::ecast(ShaderStage::Count)] = {};
+	uint32_t combined_spec_constant_mask = 0;
 	Util::Hash push_constant_layout_hash = 0;
 };
 
-class PipelineLayout : public Cookie
+struct ResourceBinding
+{
+	union {
+		VkDescriptorBufferInfo buffer;
+		struct
+		{
+			VkDescriptorImageInfo fp;
+			VkDescriptorImageInfo integer;
+		} image;
+		VkBufferView buffer_view;
+	};
+	VkDeviceSize dynamic_offset;
+};
+
+struct ResourceBindings
+{
+	ResourceBinding bindings[VULKAN_NUM_DESCRIPTOR_SETS][VULKAN_NUM_BINDINGS];
+	uint64_t cookies[VULKAN_NUM_DESCRIPTOR_SETS][VULKAN_NUM_BINDINGS];
+	uint64_t secondary_cookies[VULKAN_NUM_DESCRIPTOR_SETS][VULKAN_NUM_BINDINGS];
+	uint8_t push_constant_data[VULKAN_PUSH_CONSTANT_SIZE];
+};
+
+class PipelineLayout : public HashedObject<PipelineLayout>
 {
 public:
-	PipelineLayout(Device *device, const CombinedResourceLayout &layout);
+	PipelineLayout(Util::Hash hash, Device *device, const CombinedResourceLayout &layout);
 	~PipelineLayout();
 
 	const CombinedResourceLayout &get_resource_layout() const
@@ -85,17 +118,24 @@ public:
 		return set_allocators[set];
 	}
 
+	VkDescriptorUpdateTemplateKHR get_update_template(unsigned set) const
+	{
+		return update_template[set];
+	}
+
 private:
 	Device *device;
 	VkPipelineLayout pipe_layout = VK_NULL_HANDLE;
 	CombinedResourceLayout layout;
 	DescriptorSetAllocator *set_allocators[VULKAN_NUM_DESCRIPTOR_SETS] = {};
+	VkDescriptorUpdateTemplateKHR update_template[VULKAN_NUM_DESCRIPTOR_SETS] = {};
+	void create_update_templates();
 };
 
-class Shader : public Util::IntrusivePtrEnabled<Shader>
+class Shader : public HashedObject<Shader>
 {
 public:
-	Shader(VkDevice device, ShaderStage stage, const uint32_t *data, size_t size);
+	Shader(Util::Hash hash, Device *device, const uint32_t *data, size_t size);
 	~Shader();
 
 	const ResourceLayout &get_layout() const
@@ -103,34 +143,31 @@ public:
 		return layout;
 	}
 
-	ShaderStage get_stage() const
-	{
-		return stage;
-	}
-
 	VkShaderModule get_module() const
 	{
 		return module;
 	}
 
+	static const char *stage_to_name(ShaderStage stage);
+
 private:
-	VkDevice device;
-	ShaderStage stage;
+	Device *device;
 	VkShaderModule module;
 	ResourceLayout layout;
-};
-using ShaderHandle = Util::IntrusivePtr<Shader>;
 
-class Program : public Util::IntrusivePtrEnabled<Program>, public Cookie
+	void update_array_info(const spirv_cross::SPIRType &type, unsigned set, unsigned binding);
+};
+
+class Program : public HashedObject<Program>, public InternalSyncEnabled
 {
 public:
-	Program(Device *device);
+	Program(Device *device, Shader *vertex, Shader *fragment);
+	Program(Device *device, Shader *compute);
 	~Program();
 
-	void set_shader(ShaderHandle handle);
 	inline const Shader *get_shader(ShaderStage stage) const
 	{
-		return shaders[static_cast<unsigned>(stage)].get();
+		return shaders[Util::ecast(stage)];
 	}
 
 	void set_pipeline_layout(PipelineLayout *new_layout)
@@ -143,27 +180,17 @@ public:
 		return layout;
 	}
 
-	VkPipeline get_graphics_pipeline(Util::Hash hash) const;
-	void add_graphics_pipeline(Util::Hash hash, VkPipeline pipeline);
+	VkPipeline get_pipeline(Util::Hash hash) const;
+	VkPipeline add_pipeline(Util::Hash hash, VkPipeline pipeline);
 
-	VkPipeline get_compute_pipeline() const
-	{
-		VK_ASSERT(compute_pipeline != VK_NULL_HANDLE);
-		return compute_pipeline;
-	}
-
-	void set_compute_pipeline(VkPipeline pipeline)
-	{
-		VK_ASSERT(compute_pipeline == VK_NULL_HANDLE);
-		compute_pipeline = pipeline;
-	}
+	void promote_read_write_to_read_only();
 
 private:
+	void set_shader(ShaderStage stage, Shader *handle);
 	Device *device;
-	ShaderHandle shaders[static_cast<unsigned>(ShaderStage::Count)];
+	Shader *shaders[Util::ecast(ShaderStage::Count)] = {};
 	PipelineLayout *layout = nullptr;
-	VkPipeline compute_pipeline = VK_NULL_HANDLE;
-	Util::HashMap<VkPipeline> graphics_pipelines;
+	VulkanCache<Util::IntrusivePODWrapper<VkPipeline>> pipelines;
+	void destroy_pipeline(VkPipeline pipeline);
 };
-using ProgramHandle = Util::IntrusivePtr<Program>;
 }

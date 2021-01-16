@@ -1,4 +1,4 @@
-/* Copyright (c) 2017 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2020 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -37,5 +37,15 @@ std::string ext(const std::string &path);
 std::pair<std::string, std::string> protocol_split(const std::string &path);
 bool is_abspath(const std::string &path);
 bool is_root_path(const std::string &path);
+std::string canonicalize_path(const std::string &path);
+std::string enforce_protocol(const std::string &path);
+std::string get_executable_path();
+
+#ifdef _WIN32
+std::string to_utf8(const wchar_t *wstr, size_t len);
+std::wstring to_utf16(const char *str, size_t len);
+std::string to_utf8(const std::wstring &wstr);
+std::wstring to_utf16(const std::string &str);
+#endif
 }
 }

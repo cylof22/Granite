@@ -1,4 +1,4 @@
-/* Copyright (c) 2017 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2020 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -24,7 +24,7 @@
 
 #include "abstract_renderable.hpp"
 #include "scene.hpp"
-#include "vulkan_events.hpp"
+#include "application_wsi_events.hpp"
 
 namespace Granite
 {
@@ -34,6 +34,7 @@ class GroundPatch : public AbstractRenderable, public PerFrameRefreshableTransfo
 public:
 	friend class Ground;
 	GroundPatch(Util::IntrusivePtr<Ground> ground);
+	~GroundPatch();
 	void set_bounds(vec3 offset, vec3 size);
 
 	void set_lod_pointer(float *ptr)
@@ -41,12 +42,12 @@ public:
 		lod = ptr;
 	}
 
-	void set_neighbors(const GroundPatch *nx, const GroundPatch *px, const GroundPatch *nz, const GroundPatch *pz)
+	void set_neighbors(const GroundPatch *nx_, const GroundPatch *px_, const GroundPatch *nz_, const GroundPatch *pz_)
 	{
-		this->nx = nx;
-		this->px = px;
-		this->nz = nz;
-		this->pz = pz;
+		nx = nx_;
+		px = px_;
+		nz = nz_;
+		pz = pz_;
 	}
 
 private:
@@ -66,17 +67,17 @@ private:
 		return true;
 	}
 
-	const AABB &get_static_aabb() const override
+	const AABB *get_static_aabb() const override
 	{
-		return aabb;
+		return &aabb;
 	}
 
-	void get_render_info(const RenderContext &context, const CachedSpatialTransformComponent *transform, RenderQueue &queue) const override;
+	void get_render_info(const RenderContext &context, const RenderInfoComponent *transform, RenderQueue &queue) const override;
 	vec2 offset = vec2(0.0f);
 	vec2 size = vec2(1.0f);
 	AABB aabb;
 
-	void refresh(RenderContext &context, const CachedSpatialTransformComponent *transform) override;
+	void refresh(const RenderContext &context, const RenderInfoComponent *transform, TaskComposer &composer) override;
 };
 
 class Ground : public Util::IntrusivePtrEnabled<Ground>, public PerFrameRefreshable, public EventHandler
@@ -96,6 +97,7 @@ public:
 		float max_lod = 5.0f;
 		std::vector<float> patch_lod_bias;
 		std::vector<vec2> patch_range;
+		bool bandlimited_pixel = false;
 	};
 	Ground(unsigned size, const TerrainInfo &info);
 
@@ -106,14 +108,14 @@ public:
 
 	struct Handles
 	{
-		EntityHandle entity;
+		Entity *entity;
 		Scene::NodeHandle node;
 		Ground *ground;
 	};
 
 	static Handles add_to_scene(Scene &scene, unsigned size, float tiling_factor, const TerrainInfo &info);
 
-	void get_render_info(const RenderContext &context, const CachedSpatialTransformComponent *transform, RenderQueue &queue,
+	void get_render_info(const RenderContext &context, const RenderInfoComponent *transform, RenderQueue &queue,
 	                     const GroundPatch &patch) const;
 
 	float *get_lod_pointer(unsigned x, unsigned z)
@@ -145,7 +147,8 @@ private:
 	unsigned size;
 	TerrainInfo info;
 
-	void refresh(RenderContext &context) override;
+	void refresh(const RenderContext &context, TaskComposer &composer) override;
+
 	Vulkan::Texture *heights = nullptr;
 	Vulkan::Texture *normals = nullptr;
 	Vulkan::Texture *occlusion = nullptr;

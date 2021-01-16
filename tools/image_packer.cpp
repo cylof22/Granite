@@ -1,4 +1,4 @@
-/* Copyright (c) 2017 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2020 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -22,9 +22,10 @@
 
 #include "stb_image.h"
 #include "stb_image_write.h"
-#include "util.hpp"
+#include "logging.hpp"
 #include <vector>
 #include <string.h>
+#include <stdint.h>
 
 // Handy tool to convert Gloss/Metallic/AO maps to packed textures suitable for glTF 2.0 PBR.
 

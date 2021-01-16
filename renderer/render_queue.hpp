@@ -1,4 +1,4 @@
-/* Copyright (c) 2017 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2020 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -26,20 +26,41 @@
 #include <list>
 #include <type_traits>
 #include <stdexcept>
-#include <command_buffer.hpp>
-#include "hashmap.hpp"
+#include "command_buffer.hpp"
+#include "hash.hpp"
 #include "enum_cast.hpp"
+#include "intrusive_hash_map.hpp"
 #include "math.hpp"
 
 namespace Granite
 {
 class ShaderSuite;
 class RenderContext;
+class AbstractRenderable;
+class PositionalLight;
+struct RenderInfoComponent;
+
+struct RenderableInfo
+{
+	AbstractRenderable *renderable;
+	const RenderInfoComponent *transform;
+	Util::Hash transform_hash;
+};
+
+struct PositionalLightInfo
+{
+	PositionalLight *light;
+	const RenderInfoComponent *transform;
+	Util::Hash transform_hash;
+};
+using VisibilityList = std::vector<RenderableInfo>;
+using PositionalLightList = std::vector<PositionalLightInfo>;
 
 enum class Queue : unsigned
 {
 	Opaque = 0,
 	OpaqueEmissive,
+	Light, // Relevant only for classic deferred rendering
 	Transparent,
 	Count
 };
@@ -68,10 +89,13 @@ private:
 	RenderInfo() = default;
 };
 
+struct RenderQueueData;
+using RenderFunc = void (*)(Vulkan::CommandBuffer &, const RenderQueueData *, unsigned);
+
 struct RenderQueueData
 {
 	// How to render an object.
-	void (*render)(Vulkan::CommandBuffer &cmd, const RenderQueueData *infos, unsigned instance_count);
+	RenderFunc render;
 
 	// Per-draw call specific data. Understood by the render callback.
 	const void *render_info;
@@ -84,37 +108,58 @@ struct RenderQueueData
 	uint64_t sorting_key;
 };
 
+struct QueueDataWrappedErased : Util::IntrusiveHashMapEnabled<QueueDataWrappedErased>
+{
+};
+
+template <typename T>
+struct QueueDataWrapped : QueueDataWrappedErased
+{
+	T data;
+};
+
 class RenderQueue
 {
 public:
-	enum { BlockSize = 256 * 1024 };
+	enum { BlockSize = 64 * 1024 };
+
+	RenderQueue() = default;
+	void operator=(const RenderQueue &) = delete;
+	RenderQueue(const RenderQueue &) = delete;
+	~RenderQueue();
 
 	template <typename T>
 	T *push(Queue queue, Util::Hash instance_key, uint64_t sorting_key,
-	        void (*render)(Vulkan::CommandBuffer &cmd, const RenderQueueData *infos, unsigned instance_data),
-	        void *instance_data)
+	        RenderFunc render, void *instance_data)
 	{
 		static_assert(std::is_trivially_destructible<T>::value, "Dispatchable type is not trivially destructible!");
 
 		assert(instance_key != 0);
 		assert(sorting_key != 0);
 
-		auto itr = render_infos.find(instance_key);
-		if (itr != std::end(render_infos))
+		Util::Hasher h(instance_key);
+		h.pointer(render);
+
+		using WrappedT = QueueDataWrapped<T>;
+
+		auto *itr = render_infos.find(h.get());
+		if (itr)
 		{
-			enqueue_queue_data(queue, { render, itr->second, instance_data, sorting_key });
+			auto *t = static_cast<WrappedT *>(itr);
+			enqueue_queue_data(queue, { render, &t->data, instance_data, sorting_key });
 			return nullptr;
 		}
 		else
 		{
-			void *buffer = allocate(sizeof(T), alignof(T));
+			void *buffer = allocate(sizeof(WrappedT), alignof(WrappedT));
 			if (!buffer)
 				throw std::bad_alloc();
 
-			T *t = new(buffer) T();
-			render_infos[instance_key] = t;
-			enqueue_queue_data(queue, { render, t, instance_data, sorting_key });
-			return t;
+			auto *t = new(buffer) WrappedT();
+			t->set_hash(h.get());
+			render_infos.insert_replace(t);
+			enqueue_queue_data(queue, { render, &t->data, instance_data, sorting_key });
+			return &t->data;
 		}
 	}
 
@@ -136,16 +181,19 @@ public:
 
 	void combine_render_info(const RenderQueue &queue);
 	void reset();
-	void reset_and_reclaim();
 
-	const std::vector<RenderQueueData> &get_queue_data(Queue queue) const
+	using RenderQueueDataVector = Util::SmallVector<RenderQueueData, 64>;
+
+	const RenderQueueDataVector &get_queue_data(Queue queue) const
 	{
 		return queues[Util::ecast(queue)];
 	}
 
 	void sort();
-	void dispatch(Queue queue, Vulkan::CommandBuffer &cmd, const Vulkan::CommandBufferSavedState *state);
-	void dispatch(Queue queue, Vulkan::CommandBuffer &cmd, const Vulkan::CommandBufferSavedState *state, size_t begin, size_t end);
+	void dispatch(Queue queue, Vulkan::CommandBuffer &cmd, const Vulkan::CommandBufferSavedState *state) const;
+	void dispatch_range(Queue queue, Vulkan::CommandBuffer &cmd, const Vulkan::CommandBufferSavedState *state, size_t begin, size_t end) const;
+	void dispatch_subset(Queue queue, Vulkan::CommandBuffer &cmd, const Vulkan::CommandBufferSavedState *state, unsigned index, unsigned num_indices) const;
+	size_t get_dispatch_size(Queue queue) const;
 
 	void set_shader_suites(ShaderSuite *suite)
 	{
@@ -157,28 +205,37 @@ public:
 		return shader_suites;
 	}
 
+	void push_renderables(const RenderContext &context, const VisibilityList &visible);
+	void push_depth_renderables(const RenderContext &context, const VisibilityList &visible);
+
 private:
 	void enqueue_queue_data(Queue queue, const RenderQueueData &data);
 
-	struct Block
+	struct Block : Util::IntrusivePtrEnabled<Block>
 	{
-		std::vector<uint8_t> buffer;
+		std::unique_ptr<uint8_t[]> large_buffer;
 		uintptr_t ptr = 0;
 		uintptr_t begin = 0;
 		uintptr_t end = 0;
+		uint8_t inline_buffer[BlockSize];
 
-		Block(size_t size)
+		explicit Block(size_t size)
 		{
-			buffer.resize(size);
-			begin = reinterpret_cast<uintptr_t>(buffer.data());
-			end = reinterpret_cast<uintptr_t>(buffer.data()) + size;
+			large_buffer.reset(new uint8_t[size]);
+			begin = reinterpret_cast<uintptr_t>(large_buffer.get());
+			end = reinterpret_cast<uintptr_t>(large_buffer.get()) + size;
+			reset();
+		}
+
+		Block()
+		{
+			begin = reinterpret_cast<uintptr_t>(inline_buffer);
+			end = reinterpret_cast<uintptr_t>(inline_buffer) + BlockSize;
 			reset();
 		}
 
 		void operator=(const Block &) = delete;
 		Block(const Block &) = delete;
-		Block(Block &&) = default;
-		Block &operator=(Block &&) = default;
 
 		void reset()
 		{
@@ -186,18 +243,18 @@ private:
 		}
 	};
 
-	using Chain = std::list<Block>;
-	Chain blocks;
-	Chain large_blocks;
-	Chain::iterator current = std::end(blocks);
+	static Util::ThreadSafeObjectPool<Block> allocator_pool;
 
-	std::vector<RenderQueueData> queues[static_cast<unsigned>(Queue::Count)];
+	static void *allocate_from_block(Block &block, size_t size, size_t alignment);
+	Block *insert_block();
+	Block *insert_large_block(size_t size, size_t alignment);
 
-	void *allocate_from_block(Block &block, size_t size, size_t alignment);
-	Chain::iterator insert_block();
-	Chain::iterator insert_large_block(size_t size, size_t alignment);
+	RenderQueueDataVector queues[static_cast<unsigned>(Queue::Count)];
+	Util::SmallVector<Block *, 64> blocks;
+	Block *current = nullptr;
 
 	ShaderSuite *shader_suites = nullptr;
-	Util::HashMap<void *> render_infos;
+	Util::IntrusiveHashMapHolder<QueueDataWrappedErased> render_infos;
+	void recycle_blocks();
 };
 }

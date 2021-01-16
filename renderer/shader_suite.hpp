@@ -1,4 +1,4 @@
-/* Copyright (c) 2017 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2020 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -23,6 +23,7 @@
 #pragma once
 
 #include "shader_manager.hpp"
+#include "intrusive_hash_map.hpp"
 #include "mesh.hpp"
 
 namespace Granite
@@ -32,7 +33,7 @@ class ShaderSuite
 public:
 	void init_graphics(Vulkan::ShaderManager *manager, const std::string &vertex, const std::string &fragment);
 	void init_compute(Vulkan::ShaderManager *manager, const std::string &compute);
-	Vulkan::ProgramHandle get_program(DrawPipeline pipeline, uint32_t attribute_mask, uint32_t texture_mask);
+	Vulkan::Program *get_program(DrawPipeline pipeline, uint32_t attribute_mask, uint32_t texture_mask, uint32_t variant_id = 0);
 
 	std::vector<std::pair<std::string, int>> &get_base_defines()
 	{
@@ -40,12 +41,13 @@ public:
 	}
 
 	void bake_base_defines();
+	void promote_read_write_cache_to_read_only();
 
 private:
 	Util::Hash base_define_hash = 0;
 	Vulkan::ShaderManager *manager = nullptr;
 	Vulkan::ShaderProgram *program = nullptr;
-	Util::HashMap<unsigned> variants;
+	Util::ThreadSafeIntrusiveHashMapReadCached<Util::IntrusivePODWrapper<Vulkan::ShaderProgramVariant *>> variants;
 	std::vector<std::pair<std::string, int>> base_defines;
 };
 }

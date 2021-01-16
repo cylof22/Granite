@@ -1,4 +1,4 @@
-/* Copyright (c) 2017 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2020 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -22,23 +22,24 @@
 
 #pragma once
 
-#include "vulkan.hpp"
+#include "vulkan_headers.hpp"
 #include <vector>
 
 namespace Vulkan
 {
+class Device;
 class FenceManager
 {
 public:
-	FenceManager(VkDevice device);
+	void init(Device *device);
 	~FenceManager();
 
-	void begin();
 	VkFence request_cleared_fence();
+	void recycle_fence(VkFence fence);
 
 private:
-	VkDevice device;
+	Device *device = nullptr;
+	const VolkDeviceTable *table = nullptr;
 	std::vector<VkFence> fences;
-	unsigned index = 0;
 };
 }

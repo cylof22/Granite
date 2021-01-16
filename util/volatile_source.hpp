@@ -1,4 +1,4 @@
-/* Copyright (c) 2017 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2020 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -23,20 +23,20 @@
 #pragma once
 
 #include "filesystem.hpp"
+#include "global_managers.hpp"
 #include "intrusive.hpp"
-#include "util.hpp"
 #include "path.hpp"
+#include "logging.hpp"
 #include <string>
 
 namespace Util
 {
-using namespace Granite;
 template <typename T>
 class VolatileSource : public IntrusivePtrEnabled<VolatileSource<T>>
 {
 public:
-	VolatileSource(const std::string &path)
-		: path(path)
+	explicit VolatileSource(const std::string &path_)
+		: path(Granite::Path::enforce_protocol(path_))
 	{
 	}
 
@@ -57,48 +57,39 @@ protected:
 		notify_handle = -1;
 	}
 
-	void init()
+	bool init()
 	{
 		if (path.empty())
-			return;
+			return false;
 
-		auto file = Filesystem::get().open(path);
+		auto file = Granite::Global::filesystem()->open(path);
 		if (!file)
 		{
 			LOGE("Failed to open volatile file: %s\n", path.c_str());
-			throw std::runtime_error("file open error");
+			return false;
 		}
 
 		auto *self = static_cast<T *>(this);
-		void *data = file->map();
-		size_t size = file->get_size();
-		if (data && size)
-			self->update(data, size);
+		self->update(move(file));
 
-		auto paths = Path::protocol_split(path);
-		auto *proto = Filesystem::get().get_backend(paths.first);
+		auto paths = Granite::Path::protocol_split(path);
+		auto *proto = Granite::Global::filesystem()->get_backend(paths.first);
 		if (proto)
 		{
 			// Listen to directory so we can track file moves properly.
-			notify_handle = proto->install_notification(Path::basedir(paths.second), [&](const FileNotifyInfo &info) {
-				if (info.type == FileNotifyType::FileDeleted)
+			notify_handle = proto->install_notification(Granite::Path::basedir(paths.second), [&](const Granite::FileNotifyInfo &info) {
+				if (info.type == Granite::FileNotifyType::FileDeleted)
 					return;
 				if (info.path != path)
 					return;
 
-				auto *self = static_cast<T *>(this);
 				try
 				{
-					auto file = Filesystem::get().open(info.path);
+					auto f = Granite::Global::filesystem()->open(info.path);
 					if (!file)
 						return;
-
-					void *data = file->map();
-					size_t size = file->get_size();
-					if (data && size)
-						self->update(data, size);
-					if (data)
-						file->unmap();
+					auto *s = static_cast<T *>(this);
+					s->update(std::move(f));
 				}
 				catch (const std::exception &e)
 				{
@@ -106,6 +97,8 @@ protected:
 				}
 			});
 		}
+
+		return true;
 	}
 
 private:

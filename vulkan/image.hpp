@@ -1,4 +1,4 @@
-/* Copyright (c) 2017 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2020 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -24,9 +24,9 @@
 
 #include "cookie.hpp"
 #include "format.hpp"
-#include "intrusive.hpp"
+#include "vulkan_common.hpp"
 #include "memory_allocator.hpp"
-#include "vulkan.hpp"
+#include "vulkan_headers.hpp"
 #include <algorithm>
 
 namespace Vulkan
@@ -146,14 +146,21 @@ struct ImageInitialData
 {
 	const void *data;
 	unsigned row_length;
-	unsigned array_height;
+	unsigned image_height;
 };
 
 enum ImageMiscFlagBits
 {
 	IMAGE_MISC_GENERATE_MIPS_BIT = 1 << 0,
 	IMAGE_MISC_FORCE_ARRAY_BIT = 1 << 1,
-	IMAGE_MISC_CONCURRENT_QUEUE_BIT = 1 << 2
+	IMAGE_MISC_MUTABLE_SRGB_BIT = 1 << 2,
+	IMAGE_MISC_CONCURRENT_QUEUE_GRAPHICS_BIT = 1 << 3,
+	IMAGE_MISC_CONCURRENT_QUEUE_ASYNC_COMPUTE_BIT = 1 << 4,
+	IMAGE_MISC_CONCURRENT_QUEUE_ASYNC_GRAPHICS_BIT = 1 << 5,
+	IMAGE_MISC_CONCURRENT_QUEUE_ASYNC_TRANSFER_BIT = 1 << 6,
+	IMAGE_MISC_VERIFY_FORMAT_FEATURE_SAMPLED_LINEAR_FILTER_BIT = 1 << 7,
+	IMAGE_MISC_LINEAR_IMAGE_IGNORE_DEVICE_LOCAL_BIT = 1 << 8,
+	IMAGE_MISC_FORCE_NO_DEDICATED_BIT = 1 << 9
 };
 using ImageMiscFlags = uint32_t;
 
@@ -164,6 +171,7 @@ enum ImageViewMiscFlagBits
 using ImageViewMiscFlags = uint32_t;
 
 class Image;
+
 struct ImageViewCreateInfo
 {
 	Image *image = nullptr;
@@ -172,16 +180,28 @@ struct ImageViewCreateInfo
 	unsigned levels = VK_REMAINING_MIP_LEVELS;
 	unsigned base_layer = 0;
 	unsigned layers = VK_REMAINING_ARRAY_LAYERS;
+	VkImageViewType view_type = VK_IMAGE_VIEW_TYPE_MAX_ENUM;
 	ImageViewMiscFlags misc = 0;
 	VkComponentMapping swizzle = {
-		VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_A,
+			VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_A,
 	};
 };
 
-class ImageView : public Util::IntrusivePtrEnabled<ImageView>, public Cookie
+class ImageView;
+
+struct ImageViewDeleter
+{
+	void operator()(ImageView *view);
+};
+
+class ImageView : public Util::IntrusivePtrEnabled<ImageView, ImageViewDeleter, HandleCounter>,
+                  public Cookie, public InternalSyncEnabled
 {
 public:
+	friend struct ImageViewDeleter;
+
 	ImageView(Device *device, VkImageView view, const ImageViewCreateInfo &info);
+
 	~ImageView();
 
 	void set_alt_views(VkImageView depth, VkImageView stencil)
@@ -192,9 +212,22 @@ public:
 		stencil_view = stencil;
 	}
 
-	void set_base_level_view(VkImageView view)
+	void set_render_target_views(std::vector<VkImageView> views)
 	{
-		base_level_view = view;
+		VK_ASSERT(render_target_views.empty());
+		render_target_views = std::move(views);
+	}
+
+	void set_unorm_view(VkImageView view_)
+	{
+		VK_ASSERT(unorm_view == VK_NULL_HANDLE);
+		unorm_view = view_;
+	}
+
+	void set_srgb_view(VkImageView view_)
+	{
+		VK_ASSERT(srgb_view == VK_NULL_HANDLE);
+		srgb_view = view_;
 	}
 
 	// By default, gets a combined view which includes all aspects in the image.
@@ -204,10 +237,7 @@ public:
 		return view;
 	}
 
-	VkImageView get_base_level_view() const
-	{
-		return base_level_view != VK_NULL_HANDLE ? base_level_view : view;
-	}
+	VkImageView get_render_target_view(unsigned layer) const;
 
 	// Gets an image view which only includes floating point domains.
 	// Takes effect when we want to sample from an image which is Depth/Stencil,
@@ -223,6 +253,16 @@ public:
 	VkImageView get_integer_view() const
 	{
 		return stencil_view != VK_NULL_HANDLE ? stencil_view : view;
+	}
+
+	VkImageView get_unorm_view() const
+	{
+		return unorm_view;
+	}
+
+	VkImageView get_srgb_view() const
+	{
+		return srgb_view;
 	}
 
 	VkFormat get_format() const
@@ -248,17 +288,22 @@ public:
 private:
 	Device *device;
 	VkImageView view;
-	VkImageView base_level_view = VK_NULL_HANDLE;
+	std::vector<VkImageView> render_target_views;
 	VkImageView depth_view = VK_NULL_HANDLE;
 	VkImageView stencil_view = VK_NULL_HANDLE;
+	VkImageView unorm_view = VK_NULL_HANDLE;
+	VkImageView srgb_view = VK_NULL_HANDLE;
 	ImageViewCreateInfo info;
 };
+
 using ImageViewHandle = Util::IntrusivePtr<ImageView>;
 
 enum class ImageDomain
 {
 	Physical,
-	Transient
+	Transient,
+	LinearHostCached,
+	LinearHost
 };
 
 struct ImageCreateInfo
@@ -276,6 +321,28 @@ struct ImageCreateInfo
 	VkImageCreateFlags flags = 0;
 	ImageMiscFlags misc = 0;
 	VkImageLayout initial_layout = VK_IMAGE_LAYOUT_GENERAL;
+	VkComponentMapping swizzle = {
+			VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_A,
+	};
+	const DeviceAllocation **memory_aliases = nullptr;
+	unsigned num_memory_aliases = 0;
+
+	static ImageCreateInfo immutable_image(const TextureFormatLayout &layout)
+	{
+		Vulkan::ImageCreateInfo info;
+		info.width = layout.get_width();
+		info.height = layout.get_height();
+		info.type = layout.get_image_type();
+		info.depth = layout.get_depth();
+		info.format = layout.get_format();
+		info.layers = layout.get_layers();
+		info.levels = layout.get_levels();
+		info.usage = VK_IMAGE_USAGE_SAMPLED_BIT;
+		info.initial_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		info.samples = VK_SAMPLE_COUNT_1_BIT;
+		info.domain = ImageDomain::Physical;
+		return info;
+	}
 
 	static ImageCreateInfo immutable_2d_image(unsigned width, unsigned height, VkFormat format, bool mipmapped = false)
 	{
@@ -295,6 +362,15 @@ struct ImageCreateInfo
 		return info;
 	}
 
+	static ImageCreateInfo
+	immutable_3d_image(unsigned width, unsigned height, unsigned depth, VkFormat format, bool mipmapped = false)
+	{
+		ImageCreateInfo info = immutable_2d_image(width, height, format, mipmapped);
+		info.depth = depth;
+		info.type = VK_IMAGE_TYPE_3D;
+		return info;
+	}
+
 	static ImageCreateInfo render_target(unsigned width, unsigned height, VkFormat format)
 	{
 		ImageCreateInfo info;
@@ -305,14 +381,16 @@ struct ImageCreateInfo
 		info.format = format;
 		info.type = VK_IMAGE_TYPE_2D;
 		info.layers = 1;
-		info.usage = (format_is_depth_stencil(format) ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT :
-		                                                VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) |
+		info.usage = (format_has_depth_or_stencil_aspect(format) ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT :
+		              VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) |
 		             VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
 
 		info.samples = VK_SAMPLE_COUNT_1_BIT;
 		info.flags = 0;
 		info.misc = 0;
-		info.initial_layout = VK_IMAGE_LAYOUT_GENERAL;
+		info.initial_layout = format_has_depth_or_stencil_aspect(format) ?
+		                      VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL :
+		                      VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 		return info;
 	}
 
@@ -327,8 +405,8 @@ struct ImageCreateInfo
 		info.format = format;
 		info.type = VK_IMAGE_TYPE_2D;
 		info.layers = 1;
-		info.usage = (format_is_depth_stencil(format) ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT :
-		                                                VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) |
+		info.usage = (format_has_depth_or_stencil_aspect(format) ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT :
+		              VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) |
 		             VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT;
 		info.samples = VK_SAMPLE_COUNT_1_BIT;
 		info.flags = 0;
@@ -336,15 +414,70 @@ struct ImageCreateInfo
 		info.initial_layout = VK_IMAGE_LAYOUT_UNDEFINED;
 		return info;
 	}
+
+	static uint32_t compute_view_formats(const ImageCreateInfo &info, VkFormat *formats)
+	{
+		if ((info.misc & IMAGE_MISC_MUTABLE_SRGB_BIT) == 0)
+			return 0;
+
+		switch (info.format)
+		{
+		case VK_FORMAT_R8G8B8A8_UNORM:
+		case VK_FORMAT_R8G8B8A8_SRGB:
+			formats[0] = VK_FORMAT_R8G8B8A8_UNORM;
+			formats[1] = VK_FORMAT_R8G8B8A8_SRGB;
+			return 2;
+
+		case VK_FORMAT_B8G8R8A8_UNORM:
+		case VK_FORMAT_B8G8R8A8_SRGB:
+			formats[0] = VK_FORMAT_B8G8R8A8_UNORM;
+			formats[1] = VK_FORMAT_B8G8R8A8_SRGB;
+			return 2;
+
+		case VK_FORMAT_A8B8G8R8_UNORM_PACK32:
+		case VK_FORMAT_A8B8G8R8_SRGB_PACK32:
+			formats[0] = VK_FORMAT_A8B8G8R8_UNORM_PACK32;
+			formats[1] = VK_FORMAT_A8B8G8R8_SRGB_PACK32;
+			return 2;
+
+		default:
+			return 0;
+		}
+	}
 };
 
-class Image : public Util::IntrusivePtrEnabled<Image>, public Cookie
+struct YCbCrImageCreateInfo
+{
+	YCbCrFormat format = YCbCrFormat::YUV420P_3PLANE;
+	unsigned width = 0;
+	unsigned height = 0;
+};
+
+class Image;
+class YCbCrImage;
+
+struct ImageDeleter
+{
+	void operator()(Image *image);
+	void operator()(YCbCrImage *image);
+};
+
+enum class Layout
+{
+	Optimal,
+	General
+};
+
+class Image : public Util::IntrusivePtrEnabled<Image, ImageDeleter, HandleCounter>,
+              public Cookie, public InternalSyncEnabled
 {
 public:
-	Image(Device *device, VkImage image, VkImageView default_view, const DeviceAllocation &alloc,
-	      const ImageCreateInfo &info);
+	friend struct ImageDeleter;
+
 	~Image();
+
 	Image(Image &&) = delete;
+
 	Image &operator=(Image &&) = delete;
 
 	const ImageView &get_view() const
@@ -389,14 +522,19 @@ public:
 		return create_info;
 	}
 
-	VkImageLayout get_layout() const
+	VkImageLayout get_layout(VkImageLayout optimal) const
 	{
-		return layout;
+		return layout_type == Layout::Optimal ? optimal : VK_IMAGE_LAYOUT_GENERAL;
 	}
 
-	void set_layout(VkImageLayout new_layout)
+	Layout get_layout_type() const
 	{
-		layout = new_layout;
+		return layout_type;
+	}
+
+	void set_layout(Layout layout)
+	{
+		layout_type = layout;
 	}
 
 	bool is_swapchain_image() const
@@ -439,18 +577,134 @@ public:
 		return alloc;
 	}
 
+	void disown_image();
+	void disown_memory_allocation();
+	DeviceAllocation take_allocation_ownership();
+
+	void set_surface_transform(VkSurfaceTransformFlagBitsKHR transform)
+	{
+		surface_transform = transform;
+		if (transform != VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR)
+		{
+			const VkImageUsageFlags safe_usage_flags =
+					VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT |
+					VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+					VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
+					VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT;
+
+			if ((create_info.usage & ~safe_usage_flags) != 0)
+			{
+				LOGW("Using surface transform for non-pure render target image (usage: %u). This can lead to weird results.\n",
+				     create_info.usage);
+			}
+		}
+	}
+
+	VkSurfaceTransformFlagBitsKHR get_surface_transform() const
+	{
+		return surface_transform;
+	}
+
 private:
+	friend class Util::ObjectPool<Image>;
+
+	Image(Device *device, VkImage image, VkImageView default_view, const DeviceAllocation &alloc,
+	      const ImageCreateInfo &info, VkImageViewType view_type);
+
 	Device *device;
 	VkImage image;
 	ImageViewHandle view;
 	DeviceAllocation alloc;
 	ImageCreateInfo create_info;
 
-	VkImageLayout layout = VK_IMAGE_LAYOUT_GENERAL;
+	Layout layout_type = Layout::Optimal;
 	VkPipelineStageFlags stage_flags = 0;
 	VkAccessFlags access_flags = 0;
 	VkImageLayout swapchain_layout = VK_IMAGE_LAYOUT_UNDEFINED;
+	VkSurfaceTransformFlagBitsKHR surface_transform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+	bool owns_image = true;
+	bool owns_memory_allocation = true;
 };
 
 using ImageHandle = Util::IntrusivePtr<Image>;
+
+class YCbCrImage : public Util::IntrusivePtrEnabled<YCbCrImage, ImageDeleter, HandleCounter>
+{
+public:
+	friend struct ImageDeleter;
+	~YCbCrImage();
+	Image &get_ycbcr_image();
+	Image &get_plane_image(unsigned plane);
+	unsigned get_num_planes() const;
+	YCbCrFormat get_ycbcr_format() const;
+
+private:
+	friend class Util::ObjectPool<YCbCrImage>;
+	YCbCrImage(Device *device, YCbCrFormat format, ImageHandle image, const ImageHandle *planes, unsigned num_planes);
+
+	Device *device;
+	YCbCrFormat format;
+	ImageHandle image;
+	ImageHandle planes[3];
+	unsigned num_planes;
+};
+
+using YCbCrImageHandle = Util::IntrusivePtr<YCbCrImage>;
+
+class LinearHostImage;
+struct LinearHostImageDeleter
+{
+	void operator()(LinearHostImage *image);
+};
+
+class Buffer;
+
+enum LinearHostImageCreateInfoFlagBits
+{
+	LINEAR_HOST_IMAGE_HOST_CACHED_BIT = 1 << 0,
+	LINEAR_HOST_IMAGE_REQUIRE_LINEAR_FILTER_BIT = 1 << 1,
+	LINEAR_HOST_IMAGE_IGNORE_DEVICE_LOCAL_BIT = 1 << 2
+};
+using LinearHostImageCreateInfoFlags = uint32_t;
+
+struct LinearHostImageCreateInfo
+{
+	unsigned width = 0;
+	unsigned height = 0;
+	VkFormat format = VK_FORMAT_UNDEFINED;
+	VkImageUsageFlags usage = 0;
+	VkPipelineStageFlags stages = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+	LinearHostImageCreateInfoFlags flags = 0;
+};
+
+// Special image type which supports direct CPU mapping.
+// Useful optimization for UMA implementations of Vulkan where we don't necessarily need
+// to perform staging copies. It gracefully falls back to staging buffer as needed.
+// Only usage flag SAMPLED_BIT is currently supported.
+class LinearHostImage : public Util::IntrusivePtrEnabled<LinearHostImage, LinearHostImageDeleter, HandleCounter>
+{
+public:
+	friend struct LinearHostImageDeleter;
+
+	size_t get_row_pitch_bytes() const;
+	size_t get_offset() const;
+	const ImageView &get_view() const;
+	const Image &get_image() const;
+	const DeviceAllocation &get_host_visible_allocation() const;
+	const Buffer &get_host_visible_buffer() const;
+	bool need_staging_copy() const;
+	VkPipelineStageFlags get_used_pipeline_stages() const;
+
+private:
+	friend class Util::ObjectPool<LinearHostImage>;
+	LinearHostImage(Device *device, ImageHandle gpu_image, Util::IntrusivePtr<Buffer> cpu_image,
+	                VkPipelineStageFlags stages);
+	Device *device;
+	ImageHandle gpu_image;
+	Util::IntrusivePtr<Buffer> cpu_image;
+	VkPipelineStageFlags stages;
+	size_t row_pitch;
+	size_t row_offset;
+};
+using LinearHostImageHandle = Util::IntrusivePtr<LinearHostImage>;
 }

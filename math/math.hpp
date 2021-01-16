@@ -1,4 +1,4 @@
-/* Copyright (c) 2017 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2020 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -22,21 +22,10 @@
 
 #pragma once
 
-#include "glm/vec2.hpp"
-#include "glm/vec3.hpp"
-#include "glm/vec4.hpp"
-#include "glm/mat4x4.hpp"
-#include "glm/gtc/quaternion.hpp"
-#include "glm/gtx/transform.hpp"
-#include "glm/gtc/packing.hpp"
+#include "muglm/muglm.hpp"
 
 namespace Granite
 {
-using namespace glm;
-
-inline void quantize_color(uint8_t *v, const vec4 &color)
-{
-	for (unsigned i = 0; i < 4; i++)
-		v[i] = uint8_t(round(clamp(color[i] * 255.0f, 0.0f, 255.0f)));
-}
+using namespace muglm;
+void quantize_color(uint8_t *v, const vec4 &color);
 }

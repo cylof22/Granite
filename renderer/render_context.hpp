@@ -1,4 +1,4 @@
-/* Copyright (c) 2017 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2020 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -29,37 +29,32 @@
 #include "render_parameters.hpp"
 #include "frustum.hpp"
 #include "device.hpp"
-#include "vulkan_events.hpp"
+#include "application_wsi_events.hpp"
 
 namespace Granite
 {
 
-class RenderContext : public EventHandler
+class RenderContext
 {
 public:
-	RenderContext();
-
-	void set_scene(Scene *scene)
+	void set_scene(Scene *scene_)
 	{
-		this->scene = scene;
-	}
-
-	void set_queue(RenderQueue *queue)
-	{
-		this->queue = queue;
+		scene = scene_;
 	}
 
 	void set_camera(const mat4 &projection, const mat4 &view);
 	void set_camera(const Camera &camera);
+
+	void set_shadow_cascades(const mat4 cascades[NumShadowCascades]);
 
 	const RenderParameters &get_render_parameters() const
 	{
 		return camera;
 	}
 
-	void set_lighting_parameters(const LightingParameters *lighting)
+	void set_lighting_parameters(const LightingParameters *lighting_)
 	{
-		this->lighting = lighting;
+		lighting = lighting_;
 	}
 
 	const LightingParameters *get_lighting_parameters() const
@@ -77,12 +72,11 @@ public:
 		return *device;
 	}
 
+	void set_device(Vulkan::Device *device);
+
 private:
-	void on_device_created(const Vulkan::DeviceCreatedEvent &e);
-	void on_device_destroyed(const Vulkan::DeviceCreatedEvent &e);
 	Vulkan::Device *device = nullptr;
-	Scene *scene = nullptr;
-	RenderQueue *queue = nullptr;
+	const Scene *scene = nullptr;
 	RenderParameters camera;
 	const LightingParameters *lighting;
 	Frustum frustum;

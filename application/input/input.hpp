@@ -1,4 +1,4 @@
-/* Copyright (c) 2017 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2020 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -26,6 +26,7 @@
 #include "event.hpp"
 #include <stdint.h>
 #include "math.hpp"
+#include <limits>
 
 namespace Granite
 {
@@ -35,19 +36,18 @@ enum class JoypadKey
 	Right,
 	Up,
 	Down,
-	A,
-	B,
-	X,
-	Y,
-	L1,
-	L2,
-	L3,
-	R1,
-	R2,
-	R3,
+	East,
+	South,
+	West,
+	North,
+	LeftShoulder,
+	RightShoulder,
+	LeftThumb,
+	RightThumb,
 	Start,
 	Select,
-	Count
+	Count,
+	Unknown
 };
 
 enum class JoypadAxis
@@ -56,7 +56,10 @@ enum class JoypadAxis
 	LeftY,
 	RightX,
 	RightY,
-	Count
+	LeftTrigger,
+	RightTrigger,
+	Count,
+	Unknown
 };
 
 enum class JoypadKeyState
@@ -76,6 +79,8 @@ enum class Key
 	LeftShift,
 	Space,
 	Escape,
+	Left, Right, Up, Down,
+	_1, _2, _3, _4, _5, _6, _7, _8, _9, _0,
 	Count
 };
 
@@ -111,6 +116,9 @@ struct TouchState
 	};
 	Pointer pointers[PointerCount] = {};
 	unsigned active_pointers = 0;
+
+	unsigned width;
+	unsigned height;
 };
 
 struct JoypadState
@@ -125,21 +133,63 @@ struct JoypadState
 		return axis[Util::ecast(a)];
 	}
 
-	float axis[Util::ecast(JoypadAxis::Count)];
+	float axis[Util::ecast(JoypadAxis::Count)] = {};
 	uint32_t button_mask = 0;
 };
 static_assert(Util::ecast(JoypadKey::Count) <= 32, "Cannot have more than 32 joypad buttons.");
+
+class InputTracker;
+
+class JoypadRemapper
+{
+public:
+	struct ButtonMap : Util::IntrusiveHashMapEnabled<ButtonMap>
+	{
+		JoypadKey key;
+		JoypadAxis axis;
+	};
+
+	struct AxisMap : Util::IntrusiveHashMapEnabled<AxisMap>
+	{
+		JoypadAxis axis;
+		JoypadKey neg_edge;
+		JoypadKey pos_edge;
+		float axis_mod;
+	};
+
+	const ButtonMap *map_button(unsigned code) const;
+	const AxisMap *map_axis(unsigned code) const;
+
+	void register_button(unsigned code, JoypadKey key, JoypadAxis axis);
+	void register_axis(unsigned code,
+	                   JoypadAxis axis, float axis_mod,
+	                   JoypadKey neg_edge, JoypadKey pos_edge);
+
+	void button_event(InputTracker &tracker, unsigned index, unsigned code, bool pressed);
+	void axis_event(InputTracker &tracker, unsigned index, unsigned code, float value);
+
+	void reset();
+
+private:
+	Util::IntrusiveHashMap<ButtonMap> button_map;
+	Util::IntrusiveHashMap<AxisMap> axis_map;
+};
 
 class InputTracker
 {
 public:
 	void key_event(Key key, KeyState state);
 	void mouse_button_event(MouseButton button, double x, double y, bool pressed);
-	void mouse_move_event(double x, double y);
+	void mouse_button_event(MouseButton button, bool pressed);
+	void mouse_move_event_absolute(double x, double y);
+	void mouse_move_event_relative(double x, double y);
 	void dispatch_current_state(double delta_time);
 	void orientation_event(quat rot);
 	void joypad_key_state(unsigned index, JoypadKey key, JoypadKeyState state);
 	void joyaxis_state(unsigned index, JoypadAxis axis, float value);
+
+	void joypad_key_state_raw(unsigned index, unsigned code, bool pressed);
+	void joyaxis_state_raw(unsigned index, unsigned code, float value);
 
 	void on_touch_down(unsigned id, float x, float y);
 	void on_touch_move(unsigned id, float x, float y);
@@ -165,6 +215,39 @@ public:
 		axis_deadzone = deadzone;
 	}
 
+	void set_relative_mouse_rect(double x, double y, double width, double height)
+	{
+		mouse_relative_range_x = x;
+		mouse_relative_range_y = y;
+		mouse_relative_range_width = width;
+		mouse_relative_range_height = height;
+	}
+
+	void set_relative_mouse_speed(double speed_x, double speed_y)
+	{
+		mouse_speed_x = speed_x;
+		mouse_speed_y = speed_y;
+	}
+
+	void enable_joypad(unsigned index);
+	void disable_joypad(unsigned index);
+	int find_vacant_joypad_index() const;
+
+	void set_touch_resolution(unsigned width, unsigned height)
+	{
+		touch.width = width;
+		touch.height = height;
+	}
+
+	JoypadRemapper &get_joypad_remapper(unsigned index)
+	{
+		assert(index < Joypads);
+		return remappers[index];
+	}
+
+	enum { TouchCount = 16 };
+	enum { Joypads = 8 };
+
 private:
 	uint64_t key_state = 0;
 	uint8_t mouse_button_state = 0;
@@ -172,14 +255,42 @@ private:
 
 	double last_mouse_x = 0.0;
 	double last_mouse_y = 0.0;
+	double mouse_relative_range_x = 0.0;
+	double mouse_relative_range_y = 0.0;
+	double mouse_relative_range_width = std::numeric_limits<double>::max();
+	double mouse_relative_range_height = std::numeric_limits<double>::max();
+	double mouse_speed_x = 1.0;
+	double mouse_speed_y = 1.0;
 
-	enum { TouchCount = 16 };
-	enum { Joypads = 8 };
-
+	uint8_t active_joypads = 0;
 	JoypadState joypads[Joypads] = {};
+	JoypadRemapper remappers[Joypads];
 	TouchState touch;
 
 	float axis_deadzone = 0.3f;
+};
+class JoypadConnectionEvent : public Granite::Event
+{
+public:
+	GRANITE_EVENT_TYPE_DECL(JoypadConnectionEvent)
+	JoypadConnectionEvent(unsigned index_, bool connected_)
+	    : index(index_), connected(connected_)
+	{
+	}
+
+	unsigned get_index() const
+	{
+		return index;
+	}
+
+	bool is_connected() const
+	{
+		return connected;
+	}
+
+private:
+	unsigned index;
+	bool connected;
 };
 
 class TouchGestureEvent : public Granite::Event
@@ -187,8 +298,8 @@ class TouchGestureEvent : public Granite::Event
 public:
 	GRANITE_EVENT_TYPE_DECL(TouchGestureEvent)
 
-	TouchGestureEvent(const TouchState &state)
-		: state(state)
+	explicit TouchGestureEvent(const TouchState &state_)
+		: state(state_)
 	{
 	}
 
@@ -206,8 +317,12 @@ class TouchDownEvent : public Granite::Event
 public:
 	GRANITE_EVENT_TYPE_DECL(TouchDownEvent)
 
-	TouchDownEvent(unsigned index, unsigned id, float x, float y)
-		: index(index), id(id), x(x), y(y)
+	TouchDownEvent(unsigned index_, unsigned id_,
+	               float x_, float y_,
+	               unsigned screen_width_, unsigned screen_height_)
+		: index(index_), id(id_),
+		  x(x_), y(y_),
+		  width(screen_width_), height(screen_height_)
 	{
 	}
 
@@ -231,9 +346,20 @@ public:
 		return id;
 	}
 
+	unsigned get_screen_width() const
+	{
+		return width;
+	}
+
+	unsigned get_screen_height() const
+	{
+		return height;
+	}
+
 private:
 	unsigned index, id;
 	float x, y;
+	unsigned width, height;
 };
 
 class TouchUpEvent : public Granite::Event
@@ -241,8 +367,12 @@ class TouchUpEvent : public Granite::Event
 public:
 	GRANITE_EVENT_TYPE_DECL(TouchUpEvent)
 
-	TouchUpEvent(unsigned id, float x, float y, float start_x, float start_y)
-		: id(id), x(x), y(y), start_x(start_x), start_y(start_y)
+	TouchUpEvent(unsigned id_, float x_, float y_,
+	             float start_x_, float start_y_,
+	             unsigned screen_width_, unsigned screen_height_)
+		: id(id_), x(x_), y(y_),
+		  start_x(start_x_), start_y(start_y_),
+		  width(screen_width_), height(screen_height_)
 	{
 	}
 
@@ -271,10 +401,21 @@ public:
 		return id;
 	}
 
+	unsigned get_screen_width() const
+	{
+		return width;
+	}
+
+	unsigned get_screen_height() const
+	{
+		return height;
+	}
+
 private:
 	unsigned id;
 	float x, y;
 	float start_x, start_y;
+	unsigned width, height;
 };
 
 class JoypadButtonEvent : public Granite::Event
@@ -282,8 +423,8 @@ class JoypadButtonEvent : public Granite::Event
 public:
 	GRANITE_EVENT_TYPE_DECL(JoypadButtonEvent)
 
-	JoypadButtonEvent(unsigned index, JoypadKey key, JoypadKeyState state)
-		: index(index), key(key), state(state)
+	JoypadButtonEvent(unsigned index_, JoypadKey key_, JoypadKeyState state_)
+		: index(index_), key(key_), state(state_)
 	{
 	}
 
@@ -313,8 +454,8 @@ class JoypadAxisEvent : public Granite::Event
 public:
 	GRANITE_EVENT_TYPE_DECL(JoypadAxisEvent)
 
-	JoypadAxisEvent(unsigned index, JoypadAxis axis, float value)
-			: index(index), axis(axis), value(value)
+	JoypadAxisEvent(unsigned index_, JoypadAxis axis_, float value_)
+		: index(index_), axis(axis_), value(value_)
 	{
 	}
 
@@ -344,8 +485,8 @@ class KeyboardEvent : public Granite::Event
 public:
 	GRANITE_EVENT_TYPE_DECL(KeyboardEvent)
 
-	KeyboardEvent(Key key, KeyState state)
-		: key(key), state(state)
+	KeyboardEvent(Key key_, KeyState state_)
+		: key(key_), state(state_)
 	{
 	}
 
@@ -368,8 +509,8 @@ class OrientationEvent : public Granite::Event
 {
 public:
 	GRANITE_EVENT_TYPE_DECL(OrientationEvent)
-	OrientationEvent(quat rot)
-		: rot(rot)
+	explicit OrientationEvent(const quat &rot_)
+		: rot(rot_)
 	{
 	}
 
@@ -387,8 +528,8 @@ class MouseButtonEvent : public Granite::Event
 public:
 	GRANITE_EVENT_TYPE_DECL(MouseButtonEvent)
 
-	MouseButtonEvent(MouseButton button, double abs_x, double abs_y, bool pressed)
-		: button(button), abs_x(abs_x), abs_y(abs_y), pressed(pressed)
+	MouseButtonEvent(MouseButton button_, double abs_x_, double abs_y_, bool pressed_)
+		: button(button_), abs_x(abs_x_), abs_y(abs_y_), pressed(pressed_)
 	{
 	}
 
@@ -424,9 +565,11 @@ class MouseMoveEvent : public Granite::Event
 public:
 	GRANITE_EVENT_TYPE_DECL(MouseMoveEvent);
 
-	MouseMoveEvent(double delta_x, double delta_y, double abs_x, double abs_y,
-	               uint64_t key_mask, uint8_t btn_mask)
-		: delta_x(delta_x), delta_y(delta_y), abs_x(abs_x), abs_y(abs_y), key_mask(key_mask), btn_mask(btn_mask)
+	MouseMoveEvent(double delta_x_, double delta_y_, double abs_x_, double abs_y_,
+	               uint64_t key_mask_, uint8_t btn_mask_)
+		: delta_x(delta_x_), delta_y(delta_y_),
+		  abs_x(abs_x_), abs_y(abs_y_),
+		  key_mask(key_mask_), btn_mask(btn_mask_)
 	{
 	}
 
@@ -471,9 +614,17 @@ class JoypadStateEvent : public Granite::Event
 public:
 	GRANITE_EVENT_TYPE_DECL(JoypadStateEvent)
 
-	JoypadStateEvent(const JoypadState *states, unsigned count, double delta_time)
-		: states(states), count(count), delta_time(delta_time)
+	JoypadStateEvent(uint8_t active_mask_, const JoypadState *states_,
+	                 unsigned count_, double delta_time_)
+		: states(states_), count(count_), delta_time(delta_time_), active_mask(active_mask_)
 	{
+	}
+
+	bool is_connected(unsigned index) const
+	{
+		if (index >= count)
+			return false;
+		return (active_mask & (1u << index)) != 0;
 	}
 
 	unsigned get_num_indices() const
@@ -495,6 +646,7 @@ private:
 	const JoypadState *states;
 	unsigned count;
 	double delta_time;
+	uint8_t active_mask;
 };
 
 class InputStateEvent : public Granite::Event
@@ -502,8 +654,11 @@ class InputStateEvent : public Granite::Event
 public:
 	GRANITE_EVENT_TYPE_DECL(InputStateEvent)
 
-	InputStateEvent(double abs_x, double abs_y, double delta_time, uint64_t key_mask, uint8_t btn_mask, bool mouse_active)
-		: abs_x(abs_x), abs_y(abs_y), delta_time(delta_time), key_mask(key_mask), btn_mask(btn_mask), mouse_active(mouse_active)
+	InputStateEvent(double abs_x_, double abs_y_,
+	                double delta_time_, uint64_t key_mask_, uint8_t btn_mask_, bool mouse_active_)
+		: abs_x(abs_x_), abs_y(abs_y_),
+		  delta_time(delta_time_), key_mask(key_mask_),
+		  btn_mask(btn_mask_), mouse_active(mouse_active_)
 	{
 	}
 

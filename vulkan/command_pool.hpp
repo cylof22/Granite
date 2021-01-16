@@ -1,4 +1,4 @@
-/* Copyright (c) 2017 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2020 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -22,29 +22,40 @@
 
 #pragma once
 
-#include "vulkan.hpp"
+#include "vulkan_headers.hpp"
 #include <unordered_set>
 #include <vector>
 
 namespace Vulkan
 {
+class Device;
 class CommandPool
 {
 public:
-	CommandPool(VkDevice device, uint32_t queue_family_index);
+	CommandPool(Device *device, uint32_t queue_family_index);
 	~CommandPool();
 
+	CommandPool(CommandPool &&) noexcept;
+	CommandPool &operator=(CommandPool &&) noexcept;
+	CommandPool(const CommandPool &) = delete;
+	void operator=(const CommandPool &) = delete;
+
 	void begin();
+	void trim();
 	VkCommandBuffer request_command_buffer();
+	VkCommandBuffer request_secondary_command_buffer();
 	void signal_submitted(VkCommandBuffer cmd);
 
 private:
-	VkDevice device;
-	VkCommandPool pool;
+	Device *device;
+	const VolkDeviceTable *table;
+	VkCommandPool pool = VK_NULL_HANDLE;
 	std::vector<VkCommandBuffer> buffers;
+	std::vector<VkCommandBuffer> secondary_buffers;
 #ifdef VULKAN_DEBUG
 	std::unordered_set<VkCommandBuffer> in_flight;
 #endif
 	unsigned index = 0;
+	unsigned secondary_index = 0;
 };
 }

@@ -1,4 +1,4 @@
-/* Copyright (c) 2017 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2020 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -30,17 +30,24 @@ namespace Granite
 {
 namespace UI
 {
-void ClickButton::set_text(std::string text)
+void ClickButton::set_text(std::string text_)
 {
-	this->text = move(text);
+	text = move(text_);
 	geometry_changed();
 }
 
 void ClickButton::reconfigure()
 {
-	auto &font = UIManager::get().get_font(FontSize::Small);
+	auto &ui = *Global::ui_manager();
+	auto &font = ui.get_font(font_size);
 	vec2 minimum = font.get_text_geometry(text.c_str());
-	geometry.minimum = minimum + 2.0f * geometry.margin;
+	geometry.minimum = max(geometry.minimum, minimum + 2.0f * geometry.margin);
+}
+
+void ClickButton::set_font_size(FontSize size)
+{
+	font_size = size;
+	geometry_changed();
 }
 
 void ClickButton::reconfigure_to_canvas(vec2, vec2)
@@ -62,7 +69,8 @@ void ClickButton::on_mouse_button_released(vec2)
 
 float ClickButton::render(FlatRenderer &renderer, float layer, vec2 offset, vec2 size)
 {
-	auto &font = UIManager::get().get_font(FontSize::Small);
+	auto &ui = *Global::ui_manager();
+	auto &font = ui.get_font(font_size);
 	renderer.render_text(font, text.c_str(), vec3(offset + geometry.margin, layer), size - 2.0f * geometry.margin,
 	                     color * vec4(1.0f, 1.0f, 1.0f, click_held ? 0.25f : 1.0f), alignment);
 	return layer;

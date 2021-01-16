@@ -1,4 +1,4 @@
-/* Copyright (c) 2017 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2020 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -24,7 +24,7 @@
 
 #include "math.hpp"
 #include "event.hpp"
-#include "vulkan_events.hpp"
+#include "application_wsi_events.hpp"
 #include "input.hpp"
 
 namespace Granite
@@ -40,9 +40,21 @@ public:
 
 	void set_depth_range(float znear, float zfar);
 
+	void set_ortho(bool enable = true, float height = 0.0f);
+
 	void set_fovy(float fovy);
 
+	float get_fovy() const
+	{
+		return fovy;
+	}
+
 	void set_aspect(float aspect);
+
+	float get_aspect() const
+	{
+		return aspect;
+	}
 
 	vec3 get_front() const;
 
@@ -73,16 +85,28 @@ public:
 		return zfar;
 	}
 
+	bool get_ortho() const
+	{
+		return ortho;
+	}
+
+	float get_ortho_height() const
+	{
+		return ortho_height;
+	}
+
 	void set_transform(const mat4 &m);
 
 protected:
 	vec3 position = vec3(0.0f);
 	quat rotation = quat(1.0f, 0.0f, 0.0f, 0.0f);
-	float fovy = 0.5f * glm::half_pi<float>();
+	float fovy = 0.5f * half_pi<float>();
 	float aspect = 16.0f / 9.0f;
 	float znear = 1.0f;
 	float zfar = 1000.0f;
 	float transform_z_scale = 1.0f;
+	bool ortho = false;
+	float ortho_height = 0.0f;
 };
 
 class FPSCamera : public Camera, public EventHandler
@@ -97,7 +121,10 @@ private:
 	bool on_touch_up(const TouchUpEvent &e);
 	void on_swapchain(const Vulkan::SwapchainParameterEvent &e);
 	bool on_joypad_state(const JoypadStateEvent &e);
+	bool on_joy_button(const JoypadButtonEvent &e);
+	bool on_joy_axis(const JoypadAxisEvent &e);
 
 	unsigned pointer_count = 0;
+	bool ignore_orientation = false;
 };
 }

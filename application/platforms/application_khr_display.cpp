@@ -1,4 +1,4 @@
-/* Copyright (c) 2017 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2020 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -20,21 +20,25 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
+#ifdef HAVE_LINUX_INPUT
+#include "input_linux.hpp"
+#endif
+
 #include "application.hpp"
 #include "application_events.hpp"
-#include "vulkan_symbol_wrapper.h"
-#include "vulkan.hpp"
+#include "application_wsi.hpp"
+#include "vulkan_headers.hpp"
+#include <string.h>
+#include <signal.h>
 
 using namespace std;
 using namespace Vulkan;
 
-#ifdef KHR_DISPLAY_ACQUIRE_XLIB
-#include <X11/Xlib.h>
-typedef VkResult (VKAPI_PTR *PFN_vkAcquireXlibDisplayEXT)(VkPhysicalDevice physicalDevice, Display *dpy, VkDisplayKHR display);
-#endif
-
 namespace Granite
 {
+struct WSIPlatformDisplay;
+static WSIPlatformDisplay *global_display;
+static void signal_handler(int);
 
 static bool vulkan_update_display_mode(unsigned *width, unsigned *height, const VkDisplayModePropertiesKHR *mode,
                                        unsigned desired_width, unsigned desired_height)
@@ -76,38 +80,76 @@ static bool vulkan_update_display_mode(unsigned *width, unsigned *height, const 
 	}
 }
 
-struct WSIPlatformDisplay : Vulkan::WSIPlatform
+struct WSIPlatformDisplay : Granite::GraniteWSIPlatform
 {
 public:
-	WSIPlatformDisplay(unsigned width, unsigned height)
-		: width(width), height(height)
+	bool init(unsigned width_, unsigned height_)
 	{
-		if (!Context::init_loader(nullptr))
-			throw runtime_error("Failed to initialize Vulkan loader.");
+		width = width_;
+		height = height_;
 
-		EventManager::get_global().dequeue_all_latched(ApplicationLifecycleEvent::get_type_id());
-		EventManager::get_global().enqueue_latched<ApplicationLifecycleEvent>(ApplicationLifecycle::Stopped);
-		EventManager::get_global().dequeue_all_latched(ApplicationLifecycleEvent::get_type_id());
-		EventManager::get_global().enqueue_latched<ApplicationLifecycleEvent>(ApplicationLifecycle::Paused);
-		EventManager::get_global().dequeue_all_latched(ApplicationLifecycleEvent::get_type_id());
-		EventManager::get_global().enqueue_latched<ApplicationLifecycleEvent>(ApplicationLifecycle::Running);
+		if (!Context::init_loader(nullptr))
+		{
+			LOGE("Failed to initialize Vulkan loader.\n");
+			return false;
+		}
+
+		auto *em = Global::event_manager();
+		if (em)
+		{
+			em->dequeue_all_latched(ApplicationLifecycleEvent::get_type_id());
+			em->enqueue_latched<ApplicationLifecycleEvent>(ApplicationLifecycle::Stopped);
+			em->dequeue_all_latched(ApplicationLifecycleEvent::get_type_id());
+			em->enqueue_latched<ApplicationLifecycleEvent>(ApplicationLifecycle::Paused);
+			em->dequeue_all_latched(ApplicationLifecycleEvent::get_type_id());
+			em->enqueue_latched<ApplicationLifecycleEvent>(ApplicationLifecycle::Running);
+		}
+
+		global_display = this;
+		struct sigaction sa;
+		memset(&sa, 0, sizeof(sa));
+		sigemptyset(&sa.sa_mask);
+		sa.sa_handler = signal_handler;
+		sa.sa_flags = SA_RESTART | SA_RESETHAND;
+		sigaction(SIGINT, &sa, nullptr);
+		sigaction(SIGTERM, &sa, nullptr);
+
+#ifdef HAVE_LINUX_INPUT
+		if (!input_manager.init(
+				LINUX_INPUT_MANAGER_JOYPAD_BIT |
+				LINUX_INPUT_MANAGER_KEYBOARD_BIT |
+				LINUX_INPUT_MANAGER_MOUSE_BIT |
+				LINUX_INPUT_MANAGER_TOUCHPAD_BIT,
+				&get_input_tracker()))
+		{
+			LOGI("Failed to initialize input manager.\n");
+		}
+#endif
+		return true;
 	}
 
 	~WSIPlatformDisplay()
 	{
-		EventManager::get_global().dequeue_all_latched(ApplicationLifecycleEvent::get_type_id());
-		EventManager::get_global().enqueue_latched<ApplicationLifecycleEvent>(ApplicationLifecycle::Paused);
-		EventManager::get_global().dequeue_all_latched(ApplicationLifecycleEvent::get_type_id());
-		EventManager::get_global().enqueue_latched<ApplicationLifecycleEvent>(ApplicationLifecycle::Stopped);
+		auto *em = Global::event_manager();
+		if (em)
+		{
+			em->dequeue_all_latched(ApplicationLifecycleEvent::get_type_id());
+			em->enqueue_latched<ApplicationLifecycleEvent>(ApplicationLifecycle::Paused);
+			em->dequeue_all_latched(ApplicationLifecycleEvent::get_type_id());
+			em->enqueue_latched<ApplicationLifecycleEvent>(ApplicationLifecycle::Stopped);
+		}
 	}
 
 	bool alive(Vulkan::WSI &) override
 	{
-		return true;
+		return is_alive;
 	}
 
 	void poll_input() override
 	{
+#ifdef HAVE_LINUX_INPUT
+		input_manager.poll();
+#endif
 		get_input_tracker().dispatch_current_state(get_frame_timer().get_frame_time());
 	}
 
@@ -123,16 +165,6 @@ public:
 	VkSurfaceKHR create_surface(VkInstance instance, VkPhysicalDevice gpu) override
 	{
 		VkSurfaceKHR surface = VK_NULL_HANDLE;
-		VULKAN_SYMBOL_WRAPPER_LOAD_INSTANCE_EXTENSION_SYMBOL(instance,
-		                                                     vkGetPhysicalDeviceDisplayPropertiesKHR);
-		VULKAN_SYMBOL_WRAPPER_LOAD_INSTANCE_EXTENSION_SYMBOL(instance,
-		                                                     vkGetPhysicalDeviceDisplayPlanePropertiesKHR);
-		VULKAN_SYMBOL_WRAPPER_LOAD_INSTANCE_EXTENSION_SYMBOL(instance,
-		                                                     vkGetDisplayPlaneSupportedDisplaysKHR);
-		VULKAN_SYMBOL_WRAPPER_LOAD_INSTANCE_EXTENSION_SYMBOL(instance, vkGetDisplayModePropertiesKHR);
-		VULKAN_SYMBOL_WRAPPER_LOAD_INSTANCE_EXTENSION_SYMBOL(instance, vkCreateDisplayModeKHR);
-		VULKAN_SYMBOL_WRAPPER_LOAD_INSTANCE_EXTENSION_SYMBOL(instance, vkGetDisplayPlaneCapabilitiesKHR);
-		VULKAN_SYMBOL_WRAPPER_LOAD_INSTANCE_EXTENSION_SYMBOL(instance, vkCreateDisplayPlaneSurfaceKHR);
 
 		uint32_t display_count;
 		vkGetPhysicalDeviceDisplayPropertiesKHR(gpu, &display_count, nullptr);
@@ -247,15 +279,17 @@ out:
 		dpy = XOpenDisplay(nullptr);
 		if (dpy)
 		{
-			PFN_vkAcquireXlibDisplayEXT acquire;
-			VULKAN_SYMBOL_WRAPPER_LOAD_INSTANCE_SYMBOL(instance, "vkAcquireXlibDisplayEXT", acquire);
-			if (acquire(gpu, dpy, best_display) != VK_SUCCESS)
+			if (vkAcquireXlibDisplayEXT(gpu, dpy, best_display) != VK_SUCCESS)
 				LOGE("Failed to acquire Xlib display. Surface creation may fail.\n");
 		}
 #endif
 
 		if (vkCreateDisplayPlaneSurfaceKHR(instance, &create_info, NULL, &surface) != VK_SUCCESS)
 			return VK_NULL_HANDLE;
+
+		get_input_tracker().set_relative_mouse_rect(0.0, 0.0, double(this->width), double(this->height));
+		get_input_tracker().mouse_enter(0.5 * this->width, 0.5 * this->height);
+		get_input_tracker().set_relative_mouse_speed(0.35, 0.35);
 		return surface;
 	}
 
@@ -269,11 +303,16 @@ out:
 		return height;
 	}
 
-	void notify_resize(unsigned width, unsigned height)
+	void notify_resize(unsigned width_, unsigned height_)
 	{
 		resize = true;
-		this->width = width;
-		this->height = height;
+		width = width_;
+		height = height_;
+	}
+
+	void signal_die()
+	{
+		is_alive = false;
 	}
 
 private:
@@ -282,25 +321,43 @@ private:
 #ifdef KHR_DISPLAY_ACQUIRE_XLIB
 	Display *dpy = nullptr;
 #endif
+	bool is_alive = true;
+
+#ifdef HAVE_LINUX_INPUT
+	LinuxInputManager input_manager;
+#endif
 };
 
-void application_dummy()
+static void signal_handler(int)
 {
+	LOGI("SIGINT or SIGTERM received.\n");
+	global_display->signal_die();
 }
 }
 
-int main(int argc, char *argv[])
+namespace Granite
 {
-	auto app = unique_ptr<Granite::Application>(Granite::application_create(argc, argv));
+int application_main(Application *(*create_application)(int, char **), int argc, char *argv[])
+{
+	Global::init();
+	auto app = unique_ptr<Granite::Application>(create_application(argc, argv));
 	if (app)
 	{
-		if (!app->init_wsi(make_unique<Granite::WSIPlatformDisplay>(1280, 720)))
+		auto platform = make_unique<Granite::WSIPlatformDisplay>();
+		if (!platform->init(1280, 720))
+			return 1;
+		if (!app->init_wsi(move(platform)))
 			return 1;
 
+		Granite::Global::start_audio_system();
 		while (app->poll())
 			app->run_frame();
+		Granite::Global::stop_audio_system();
+		app.reset();
+		Granite::Global::deinit();
 		return 0;
 	}
 	else
 		return 1;
+}
 }

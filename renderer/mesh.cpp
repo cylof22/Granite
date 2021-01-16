@@ -1,4 +1,4 @@
-/* Copyright (c) 2017 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2020 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -37,6 +37,7 @@ Hash StaticMesh::get_instance_key() const
 	h.u64(vbo_position->get_cookie());
 	h.u32(position_stride);
 	h.u32(topology);
+	h.u32(primitive_restart);
 	if (vbo_attributes)
 	{
 		h.u64(vbo_attributes->get_cookie());
@@ -71,9 +72,9 @@ Hash StaticMesh::get_baked_instance_key() const
 
 namespace RenderFunctions
 {
-static void mesh_set_state(CommandBuffer &cmd, const StaticMeshInfo &info)
+void mesh_set_state(CommandBuffer &cmd, const StaticMeshInfo &info)
 {
-	cmd.set_program(*info.program);
+	cmd.set_program(info.program);
 
 	if (info.alpha_test)
 		cmd.set_multisample_state(false, false, true);
@@ -96,9 +97,7 @@ static void mesh_set_state(CommandBuffer &cmd, const StaticMeshInfo &info)
 
 	cmd.push_constants(&info.fragment, 0, sizeof(info.fragment));
 	cmd.set_primitive_topology(info.topology);
-
-	bool primitive_restart = info.ibo && (info.topology == VK_PRIMITIVE_TOPOLOGY_LINE_STRIP || info.topology == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP);
-	cmd.set_primitive_restart(primitive_restart);
+	cmd.set_primitive_restart(info.primitive_restart);
 
 	if (info.two_sided)
 		cmd.set_cull_mode(VK_CULL_MODE_NONE);
@@ -108,7 +107,7 @@ void debug_mesh_render(CommandBuffer &cmd, const RenderQueueData *infos, unsigne
 {
 	auto *info = static_cast<const DebugMeshInfo *>(infos->render_info);
 
-	cmd.set_program(*info->program);
+	cmd.set_program(info->program);
 	cmd.push_constants(&info->MVP, 0, sizeof(info->MVP));
 	cmd.set_primitive_topology(VK_PRIMITIVE_TOPOLOGY_LINE_LIST);
 	cmd.set_vertex_attrib(0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0);
@@ -166,9 +165,9 @@ void skinned_mesh_render(CommandBuffer &cmd, const RenderQueueData *infos, unsig
 	{
 		auto &info = *static_cast<const SkinnedMeshInstanceInfo *>(infos[i].instance_data);
 		auto *world_transforms = static_cast<mat4 *>(cmd.allocate_constant_data(3, 1, sizeof(mat4) * info.num_bones));
-		auto *normal_transforms = static_cast<mat4 *>(cmd.allocate_constant_data(3, 2, sizeof(mat4) * info.num_bones));
+		//auto *normal_transforms = static_cast<mat4 *>(cmd.allocate_constant_data(3, 2, sizeof(mat4) * info.num_bones));
 		memcpy(world_transforms, info.world_transforms, sizeof(mat4) * info.num_bones);
-		memcpy(normal_transforms, info.normal_transforms, sizeof(mat4) * info.num_bones);
+		//memcpy(normal_transforms, info.normal_transforms, sizeof(mat4) * info.num_bones);
 
 		if (static_info->ibo)
 			cmd.draw_indexed(static_info->count, 1, static_info->ibo_offset, static_info->vertex_offset, 0);
@@ -196,10 +195,10 @@ void StaticMesh::fill_render_info(StaticMeshInfo &info) const
 	info.fragment.metallic = material->metallic;
 	info.fragment.emissive = vec4(material->emissive, 0.0f);
 	info.fragment.base_color = material->base_color;
-	info.fragment.lod_bias = material->lod_bias;
 	info.fragment.normal_scale = material->normal_scale;
 
 	info.topology = topology;
+	info.primitive_restart = primitive_restart;
 	info.two_sided = material->two_sided;
 	info.alpha_test = material->pipeline == DrawPipeline::AlphaTest;
 
@@ -223,7 +222,7 @@ static Queue material_to_queue(const Material &mat)
 		return Queue::Opaque;
 }
 
-void StaticMesh::get_render_info(const RenderContext &context, const CachedSpatialTransformComponent *transform, RenderQueue &queue) const
+void StaticMesh::get_render_info(const RenderContext &context, const RenderInfoComponent *transform, RenderQueue &queue) const
 {
 	auto type = material_to_queue(*material);
 	uint32_t attrs = 0;
@@ -235,6 +234,7 @@ void StaticMesh::get_render_info(const RenderContext &context, const CachedSpati
 	Hasher h;
 	h.u32(attrs);
 	h.u32(ecast(material->pipeline));
+	h.u32(material->shader_variant);
 	auto pipe_hash = h.get();
 
 	h.u64(material->get_hash());
@@ -246,7 +246,7 @@ void StaticMesh::get_render_info(const RenderContext &context, const CachedSpati
 	auto *t = transform->transform;
 	auto *instance_data = queue.allocate_one<StaticMeshInstanceInfo>();
 	instance_data->vertex.Model = t->world_transform;
-	instance_data->vertex.Normal = t->normal_transform;
+	//instance_data->vertex.Normal = t->normal_transform;
 
 	auto *mesh_info = queue.push<StaticMeshInfo>(type, instance_key, sorting_key,
 	                                             RenderFunctions::static_mesh_render,
@@ -264,11 +264,11 @@ void StaticMesh::get_render_info(const RenderContext &context, const CachedSpati
 
 		fill_render_info(*mesh_info);
 		mesh_info->program = queue.get_shader_suites()[ecast(RenderableType::Mesh)].get_program(material->pipeline, attrs,
-		                                                                                        textures).get();
+		                                                                                        textures, material->shader_variant);
 	}
 }
 
-void SkinnedMesh::get_render_info(const RenderContext &context, const CachedSpatialTransformComponent *transform, RenderQueue &queue) const
+void SkinnedMesh::get_render_info(const RenderContext &context, const RenderInfoComponent *transform, RenderQueue &queue) const
 {
 	auto type = material_to_queue(*material);
 	uint32_t attrs = 0;
@@ -286,6 +286,7 @@ void SkinnedMesh::get_render_info(const RenderContext &context, const CachedSpat
 	h.u32(attrs);
 	h.u32(textures);
 	h.u32(ecast(material->pipeline));
+	h.u32(material->shader_variant);
 	auto pipe_hash = h.get();
 
 	h.u64(material->get_hash());
@@ -299,9 +300,9 @@ void SkinnedMesh::get_render_info(const RenderContext &context, const CachedSpat
 	unsigned num_bones = transform->skin_transform->bone_world_transforms.size();
 	instance_data->num_bones = num_bones;
 	instance_data->world_transforms = queue.allocate_many<mat4>(num_bones);
-	instance_data->normal_transforms = queue.allocate_many<mat4>(num_bones);
+	//instance_data->normal_transforms = queue.allocate_many<mat4>(num_bones);
 	memcpy(instance_data->world_transforms, transform->skin_transform->bone_world_transforms.data(), num_bones * sizeof(mat4));
-	memcpy(instance_data->normal_transforms, transform->skin_transform->bone_normal_transforms.data(), num_bones * sizeof(mat4));
+	//memcpy(instance_data->normal_transforms, transform->skin_transform->bone_normal_transforms.data(), num_bones * sizeof(mat4));
 
 	auto *mesh_info = queue.push<StaticMeshInfo>(type, instance_key, sorting_key,
 	                                             RenderFunctions::skinned_mesh_render,
@@ -311,7 +312,7 @@ void SkinnedMesh::get_render_info(const RenderContext &context, const CachedSpat
 	{
 		fill_render_info(*mesh_info);
 		mesh_info->program = queue.get_shader_suites()[ecast(RenderableType::Mesh)].get_program(material->pipeline, attrs,
-		                                                                                        textures).get();
+		                                                                                        textures, material->shader_variant);
 	}
 }
 

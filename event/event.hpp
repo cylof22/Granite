@@ -1,4 +1,4 @@
-/* Copyright (c) 2017 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2020 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -24,14 +24,16 @@
 
 #include <vector>
 #include <memory>
-#include <unordered_map>
 #include <stdexcept>
 #include <utility>
+#include "global_managers.hpp"
+#include "compile_time_hash.hpp"
+#include "intrusive_hash_map.hpp"
 
 #define EVENT_MANAGER_REGISTER(clazz, member, event) \
-	::Granite::EventManager::get_global().register_handler<clazz, event, &clazz::member>(this)
+	::Granite::Global::event_manager()->register_handler<clazz, event, &clazz::member>(this)
 #define EVENT_MANAGER_REGISTER_LATCH(clazz, up_event, down_event, event) \
-	::Granite::EventManager::get_global().register_latch_handler<clazz, event, &clazz::up_event, &clazz::down_event>(this)
+	::Granite::Global::event_manager()->register_latch_handler<clazz, event, &clazz::up_event, &clazz::down_event>(this)
 
 namespace Granite
 {
@@ -43,52 +45,40 @@ Return member_function_invoker(void *object, const Event &e)
 	return (static_cast<T *>(object)->*callback)(static_cast<const EventType &>(e));
 }
 
-namespace Detail
-{
-
-#ifdef _MSC_VER
-// MSVC generates bogus warnings here.
-#pragma warning(disable: 4307)
-#endif
-
-constexpr uint64_t fnv_iterate(uint64_t hash, char c)
-{
-	return (hash * 0x100000001b3ull) ^ uint8_t(c);
-}
-
-template<size_t index>
-constexpr uint64_t compile_time_fnv1_inner(uint64_t hash, const char *str)
-{
-	return compile_time_fnv1_inner<index - 1>(fnv_iterate(hash, str[index]), str);
-}
-
-template<>
-constexpr uint64_t compile_time_fnv1_inner<size_t(-1)>(uint64_t hash, const char *)
-{
-	return hash;
-}
-
-template<size_t len>
-constexpr uint64_t compile_time_fnv1(const char (&str)[len])
-{
-	return compile_time_fnv1_inner<len - 1>(0xcbf29ce484222325ull, str);
-}
-}
-
-#define GRANITE_EVENT_TYPE_HASH(x) ::Granite::Detail::compile_time_fnv1(#x)
+#define GRANITE_EVENT_TYPE_HASH(x) ::Util::compile_time_fnv1(#x)
 using EventType = uint64_t;
 
 #define GRANITE_EVENT_TYPE_DECL(x) \
-	static inline constexpr ::Granite::EventType get_type_id() { return GRANITE_EVENT_TYPE_HASH(x); }
+enum class EventTypeWrapper : ::Granite::EventType { \
+	type_id = GRANITE_EVENT_TYPE_HASH(x) \
+}; \
+static inline constexpr ::Granite::EventType get_type_id() { \
+	return ::Granite::EventType(EventTypeWrapper::type_id); \
+}
 
 class Event
 {
 public:
 	virtual ~Event() = default;
 
-	void set_cookie(uint64_t cookie)
+	Event() = default;
+
+	// Doesn't have to be set unless type information is going to be lost.
+	// E.g. we're storing the Event some place and we have type-erasure.
+	// Having this set helps us recover type information for dispatch.
+	explicit Event(EventType type_)
+		: type(type_)
 	{
-		this->cookie = cookie;
+	}
+
+	EventType get_type_id() const
+	{
+		return type;
+	}
+
+	void set_cookie(uint64_t cookie_)
+	{
+		cookie = cookie_;
 	}
 
 	uint64_t get_cookie() const
@@ -97,7 +87,8 @@ public:
 	}
 
 private:
-	uint64_t cookie;
+	EventType type = 0;
+	uint64_t cookie = 0;
 };
 
 class EventHandler
@@ -107,17 +98,16 @@ public:
 	void operator=(const EventHandler &) = delete;
 	EventHandler() = default;
 	~EventHandler();
+
+	void event_manager_teardown();
+
+private:
+	bool need_unregister = true;
 };
 
 class EventManager
 {
 public:
-	static EventManager &get_global()
-	{
-		static EventManager static_manager;
-		return static_manager;
-	}
-
 	template<typename T, typename... P>
 	void enqueue(P&&... p)
 	{
@@ -159,6 +149,13 @@ public:
 		dispatch_event(l.handlers, t);
 	}
 
+	void dispatch_inline(const Event &e)
+	{
+		assert(e.get_type_id() != 0);
+		auto &l = events[e.get_type_id()];
+		dispatch_event(l.handlers, e);
+	}
+
 	void dispatch();
 
 	template<typename T, typename EventType, bool (T::*mem_fn)(const EventType &)>
@@ -192,8 +189,8 @@ public:
 			handler, handler };
 
 		static constexpr auto type_id = EventType::get_type_id();
-		auto &events = latched_events[type_id];
-		dispatch_up_events(events.queued_events, h);
+		auto &levents = latched_events[type_id];
+		dispatch_up_events(levents.queued_events, h);
 
 		auto &l = latched_events[type_id];
 		if (l.dispatching)
@@ -235,7 +232,7 @@ private:
 		EventHandler *unregister_key;
 	};
 
-	struct EventTypeData
+	struct EventTypeData : Util::IntrusiveHashMapEnabled<EventTypeData>
 	{
 		std::vector<std::unique_ptr<Event>> queued_events;
 		std::vector<Handler> handlers;
@@ -246,7 +243,7 @@ private:
 		void flush_recursive_handlers();
 	};
 
-	struct LatchEventTypeData
+	struct LatchEventTypeData : Util::IntrusiveHashMapEnabled<LatchEventTypeData>
 	{
 		std::vector<std::unique_ptr<Event>> queued_events;
 		std::vector<LatchHandler> handlers;
@@ -268,15 +265,8 @@ private:
 #endif
 	void unregister_latch_handler(const LatchHandler &handler);
 
-	struct EventHasher
-	{
-		size_t operator()(EventType hash) const
-		{
-			return static_cast<size_t>(hash);
-		}
-	};
-	std::unordered_map<EventType, EventTypeData, EventHasher> events;
-	std::unordered_map<EventType, LatchEventTypeData, EventHasher> latched_events;
+	Util::IntrusiveHashMap<EventTypeData> events;
+	Util::IntrusiveHashMap<LatchEventTypeData> latched_events;
 	uint64_t cookie_counter = 0;
 };
 }

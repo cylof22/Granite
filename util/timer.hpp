@@ -1,4 +1,4 @@
-/* Copyright (c) 2017 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2020 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -24,7 +24,7 @@
 
 #include <stdint.h>
 
-namespace Granite
+namespace Util
 {
 class FrameTimer
 {
@@ -48,4 +48,16 @@ private:
 	int64_t idle_time = 0;
 	int64_t get_time();
 };
+
+class Timer
+{
+public:
+	void start();
+	double end();
+
+private:
+	int64_t t = 0;
+};
+
+int64_t get_current_time_nsecs();
 }

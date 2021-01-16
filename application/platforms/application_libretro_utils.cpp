@@ -1,4 +1,4 @@
-/* Copyright (c) 2017 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2020 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -23,6 +23,8 @@
 #include "application_libretro_utils.hpp"
 #include "application.hpp"
 #include "application_events.hpp"
+#include "thread_group.hpp"
+#include "context.hpp"
 
 namespace Granite
 {
@@ -32,8 +34,6 @@ static retro_hw_render_context_negotiation_interface_vulkan vulkan_negotiation;
 static std::unique_ptr<Vulkan::Context> vulkan_context;
 static Vulkan::ImageViewHandle swapchain_unorm_view;
 static Vulkan::ImageHandle swapchain_image;
-static Vulkan::Semaphore acquire_semaphore;
-static unsigned num_swapchain_images;
 static retro_vulkan_image swapchain_image_info;
 static bool can_dupe = false;
 static std::string application_name;
@@ -41,6 +41,8 @@ static unsigned application_version;
 
 static unsigned swapchain_width;
 static unsigned swapchain_height;
+static unsigned swapchain_frame_index;
+static Vulkan::Semaphore acquire_semaphore;
 
 static VkApplicationInfo vulkan_app = {
 	VK_STRUCTURE_TYPE_APPLICATION_INFO,
@@ -80,10 +82,16 @@ bool libretro_create_device(
 	if (!Vulkan::Context::init_loader(get_instance_proc_addr))
 		return false;
 
-	vulkan_context.reset(
-			new Vulkan::Context(instance, gpu, surface, required_device_extensions, num_required_device_extensions,
-			                    required_device_layers, num_required_device_layers,
-			                    required_features));
+	vulkan_context.reset(new Vulkan::Context);
+#ifdef GRANITE_VULKAN_MT
+	vulkan_context->set_num_thread_indices(Global::thread_group()->get_num_threads() + 1);
+#endif
+	if (!vulkan_context->init_device_from_instance(instance, gpu, surface, required_device_extensions, num_required_device_extensions,
+	                                               required_device_layers, num_required_device_layers,
+	                                               required_features))
+	{
+		return false;
+	}
 
 	vulkan_context->release_device();
 	context->gpu = vulkan_context->get_gpu();
@@ -97,43 +105,23 @@ bool libretro_create_device(
 
 void libretro_begin_frame(Vulkan::WSI &wsi, retro_usec_t frame_time)
 {
-	auto sync_index = vulkan_interface->get_sync_index(vulkan_interface->handle);
-
-	// Check if we need to reinitialize the swapchain.
-	unsigned num_images = 0;
-	auto sync_mask = vulkan_interface->get_sync_index_mask(vulkan_interface->handle);
-	for (unsigned i = 0; i < 32; i++)
-	{
-		if (sync_mask & (1u << i))
-			num_images = i + 1;
-	}
-
-	if (num_images != num_swapchain_images)
-	{
-		num_swapchain_images = num_images;
-		std::vector<Vulkan::ImageHandle> images;
-		for (unsigned i = 0; i < num_images; i++)
-			images.push_back(swapchain_image);
-
-		acquire_semaphore.reset();
-		wsi.reinit_external_swapchain(std::move(images));
-	}
-
 	// Setup the external frame.
 	vulkan_interface->wait_sync_index(vulkan_interface->handle);
-	wsi.set_external_frame(sync_index, acquire_semaphore, frame_time * 1e-6);
+	wsi.set_external_frame(swapchain_frame_index, acquire_semaphore, frame_time * 1e-6);
 	acquire_semaphore.reset();
+
+	swapchain_frame_index ^= 1;
 }
 
 void libretro_end_frame(retro_video_refresh_t video_cb, Vulkan::WSI &wsi)
 {
 	// Present to libretro frontend.
-	auto signal_semaphore = wsi.get_device().request_semaphore();
+	auto signal_semaphore = wsi.get_device().request_legacy_semaphore();
 	vulkan_interface->set_signal_semaphore(vulkan_interface->handle,
 	                                       signal_semaphore->get_semaphore());
 	signal_semaphore->signal_external();
 
-	acquire_semaphore = wsi.get_external_release_semaphore();
+	acquire_semaphore = wsi.consume_external_release_semaphore();
 	if (acquire_semaphore && acquire_semaphore->get_semaphore() != VK_NULL_HANDLE)
 	{
 		vulkan_interface->set_image(vulkan_interface->handle,
@@ -161,13 +149,12 @@ void libretro_end_frame(retro_video_refresh_t video_cb, Vulkan::WSI &wsi)
 			cmd->image_barrier(*swapchain_image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
 			                   VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, VK_PIPELINE_STAGE_TRANSFER_BIT,
 			                   VK_ACCESS_TRANSFER_WRITE_BIT);
-			swapchain_image->set_layout(VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 			cmd->clear_image(*swapchain_image, {});
 			cmd->image_barrier(*swapchain_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
 			                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-			                   VK_PIPELINE_STAGE_TRANSFER_BIT, 0, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-			                   VK_ACCESS_SHADER_READ_BIT);
-			swapchain_image->set_layout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+			                   VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+			                   VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
+			device.submit(cmd);
 			video_cb(RETRO_HW_FRAME_BUFFER_VALID, swapchain_width, swapchain_height, 0);
 			can_dupe = true;
 		}
@@ -199,14 +186,7 @@ bool libretro_context_reset(retro_hw_render_interface_vulkan *vulkan, Vulkan::WS
 		                                vulkan->unlock_queue(vulkan->handle);
 	                                });
 
-	unsigned num_images = 0;
-	auto sync_mask = vulkan->get_sync_index_mask(vulkan->handle);
-	for (unsigned i = 0; i < 32; i++)
-	{
-		if (sync_mask & (1u << i))
-			num_images = i + 1;
-	}
-	num_swapchain_images = num_images;
+	const unsigned num_swapchain_images = 2;
 
 	Vulkan::ImageCreateInfo info = Vulkan::ImageCreateInfo::render_target(swapchain_width, swapchain_height,
 	                                                                      VK_FORMAT_R8G8B8A8_SRGB);
@@ -224,9 +204,10 @@ bool libretro_context_reset(retro_hw_render_interface_vulkan *vulkan, Vulkan::WS
 	swapchain_unorm_view = wsi.get_device().create_image_view(view_info);
 
 	std::vector<Vulkan::ImageHandle> images;
-	for (unsigned i = 0; i < num_images; i++)
+	for (unsigned i = 0; i < num_swapchain_images; i++)
 		images.push_back(swapchain_image);
 
+	wsi.get_device().init_frame_contexts(2);
 	if (!wsi.init_external_swapchain(std::move(images)))
 		return false;
 
@@ -244,6 +225,7 @@ bool libretro_context_reset(retro_hw_render_interface_vulkan *vulkan, Vulkan::WS
 	swapchain_image_info.create_info.subresourceRange.levelCount = 1;
 	swapchain_image_info.create_info.subresourceRange.layerCount = 1;
 	swapchain_image_info.create_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	swapchain_frame_index = 0;
 	return true;
 }
 
@@ -276,20 +258,28 @@ bool libretro_load_game(retro_environment_t environ_cb)
 		return false;
 	}
 
-	EventManager::get_global().dequeue_all_latched(ApplicationLifecycleEvent::get_type_id());
-	EventManager::get_global().enqueue_latched<ApplicationLifecycleEvent>(ApplicationLifecycle::Stopped);
-	EventManager::get_global().dequeue_all_latched(ApplicationLifecycleEvent::get_type_id());
-	EventManager::get_global().enqueue_latched<ApplicationLifecycleEvent>(ApplicationLifecycle::Paused);
-	EventManager::get_global().dequeue_all_latched(ApplicationLifecycleEvent::get_type_id());
-	EventManager::get_global().enqueue_latched<ApplicationLifecycleEvent>(ApplicationLifecycle::Running);
+	auto *em = Global::event_manager();
+	if (em)
+	{
+		em->dequeue_all_latched(ApplicationLifecycleEvent::get_type_id());
+		em->enqueue_latched<ApplicationLifecycleEvent>(ApplicationLifecycle::Stopped);
+		em->dequeue_all_latched(ApplicationLifecycleEvent::get_type_id());
+		em->enqueue_latched<ApplicationLifecycleEvent>(ApplicationLifecycle::Paused);
+		em->dequeue_all_latched(ApplicationLifecycleEvent::get_type_id());
+		em->enqueue_latched<ApplicationLifecycleEvent>(ApplicationLifecycle::Running);
+	}
 	return true;
 }
 
 void libretro_unload_game()
 {
-	EventManager::get_global().dequeue_all_latched(ApplicationLifecycleEvent::get_type_id());
-	EventManager::get_global().enqueue_latched<ApplicationLifecycleEvent>(ApplicationLifecycle::Paused);
-	EventManager::get_global().dequeue_all_latched(ApplicationLifecycleEvent::get_type_id());
-	EventManager::get_global().enqueue_latched<ApplicationLifecycleEvent>(ApplicationLifecycle::Stopped);
+	auto *em = Global::event_manager();
+	if (em)
+	{
+		em->dequeue_all_latched(ApplicationLifecycleEvent::get_type_id());
+		em->enqueue_latched<ApplicationLifecycleEvent>(ApplicationLifecycle::Paused);
+		em->dequeue_all_latched(ApplicationLifecycleEvent::get_type_id());
+		em->enqueue_latched<ApplicationLifecycleEvent>(ApplicationLifecycle::Stopped);
+	}
 }
 }

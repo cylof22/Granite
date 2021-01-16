@@ -1,4 +1,4 @@
-/* Copyright (c) 2017 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2020 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -22,10 +22,9 @@
 
 #pragma once
 
-#include "vulkan_symbol_wrapper.h"
-#include "vulkan.hpp"
-#include "libretro/libretro.h"
-#include "libretro/libretro_vulkan.h"
+#include "vulkan_headers.hpp"
+#include "libretro.h"
+#include "libretro_vulkan.h"
 #include "wsi.hpp"
 
 // Various utilities to make writing a libretro Vulkan interface easier.

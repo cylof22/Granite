@@ -1,4 +1,4 @@
-/* Copyright (c) 2017 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2020 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -24,7 +24,7 @@
 
 #include "abstract_renderable.hpp"
 #include "buffer.hpp"
-#include "hashmap.hpp"
+#include "hash.hpp"
 #include "material.hpp"
 #include "aabb.hpp"
 #include "render_queue.hpp"
@@ -32,6 +32,7 @@
 
 namespace Granite
 {
+struct RenderQueueData;
 
 enum class MeshAttribute : unsigned
 {
@@ -42,7 +43,8 @@ enum class MeshAttribute : unsigned
 	BoneIndex = 4,
 	BoneWeights = 5,
 	VertexColor = 6,
-	Count
+	Count,
+	None
 };
 
 enum MeshAttributeFlagBits
@@ -65,7 +67,7 @@ struct MeshAttributeLayout
 struct StaticMeshVertex
 {
 	mat4 Model;
-	mat4 Normal;
+	//mat4 Normal;
 	enum
 	{
 		max_instances = 256
@@ -78,7 +80,6 @@ struct StaticMeshFragment
 	vec4 emissive;
 	float roughness;
 	float metallic;
-	float lod_bias;
 	float normal_scale;
 };
 
@@ -103,7 +104,7 @@ struct StaticMeshInstanceInfo
 struct SkinnedMeshInstanceInfo
 {
 	mat4 *world_transforms = nullptr;
-	mat4 *normal_transforms = nullptr;
+	//mat4 *normal_transforms = nullptr;
 	uint32_t num_bones = 0;
 };
 
@@ -130,6 +131,7 @@ struct StaticMeshInfo
 	VkIndexType index_type;
 	bool two_sided;
 	bool alpha_test;
+	bool primitive_restart;
 };
 
 namespace RenderFunctions
@@ -138,6 +140,7 @@ void static_mesh_render(Vulkan::CommandBuffer &cmd, const RenderQueueData *rende
 void debug_mesh_render(Vulkan::CommandBuffer &cmd, const RenderQueueData *render, unsigned instances);
 void line_strip_render(Vulkan::CommandBuffer &cmd, const RenderQueueData *render, unsigned instances);
 void skinned_mesh_render(Vulkan::CommandBuffer &cmd, const RenderQueueData *render, unsigned instances);
+void mesh_set_state(Vulkan::CommandBuffer &cmd, const StaticMeshInfo &info);
 }
 
 struct StaticMesh : AbstractRenderable
@@ -152,6 +155,7 @@ struct StaticMesh : AbstractRenderable
 	uint32_t attribute_stride = 0;
 	VkIndexType index_type = VK_INDEX_TYPE_UINT16;
 	VkPrimitiveTopology topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+	bool primitive_restart = false;
 
 	MeshAttributeLayout attributes[Util::ecast(MeshAttribute::Count)];
 
@@ -162,7 +166,7 @@ struct StaticMesh : AbstractRenderable
 
 	AABB static_aabb;
 
-	void get_render_info(const RenderContext &context, const CachedSpatialTransformComponent *transform,
+	void get_render_info(const RenderContext &context, const RenderInfoComponent *transform,
 	                     RenderQueue &queue) const override;
 
 	DrawPipeline get_mesh_draw_pipeline() const override
@@ -183,15 +187,15 @@ private:
 		return true;
 	}
 
-	const AABB &get_static_aabb() const override
+	const AABB *get_static_aabb() const override
 	{
-		return static_aabb;
+		return &static_aabb;
 	}
 };
 
 struct SkinnedMesh : public StaticMesh
 {
-	void get_render_info(const RenderContext &context, const CachedSpatialTransformComponent *transform,
+	void get_render_info(const RenderContext &context, const RenderInfoComponent *transform,
 	                     RenderQueue &queue) const override;
 };
 }

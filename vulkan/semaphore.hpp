@@ -1,4 +1,4 @@
-/* Copyright (c) 2017 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2020 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -22,22 +22,26 @@
 
 #pragma once
 
-#include "intrusive.hpp"
-#include "vulkan.hpp"
+#include "vulkan_common.hpp"
+#include "vulkan_headers.hpp"
+#include "cookie.hpp"
+#include "object_pool.hpp"
 
 namespace Vulkan
 {
 class Device;
 
-class SemaphoreHolder : public Util::IntrusivePtrEnabled<SemaphoreHolder>
+class SemaphoreHolder;
+struct SemaphoreHolderDeleter
+{
+	void operator()(SemaphoreHolder *semaphore);
+};
+
+class SemaphoreHolder : public Util::IntrusivePtrEnabled<SemaphoreHolder, SemaphoreHolderDeleter, HandleCounter>,
+                        public InternalSyncEnabled
 {
 public:
-	SemaphoreHolder(Device *device, VkSemaphore semaphore, bool signalled)
-	    : device(device)
-	    , semaphore(semaphore)
-	    , signalled(signalled)
-	{
-	}
+	friend struct SemaphoreHolderDeleter;
 
 	~SemaphoreHolder();
 
@@ -51,6 +55,11 @@ public:
 		return signalled;
 	}
 
+	uint64_t get_timeline_value() const
+	{
+		return timeline;
+	}
+
 	VkSemaphore consume()
 	{
 		auto ret = semaphore;
@@ -61,9 +70,24 @@ public:
 		return ret;
 	}
 
+	VkSemaphore release_semaphore()
+	{
+		auto ret = semaphore;
+		semaphore = VK_NULL_HANDLE;
+		signalled = false;
+		return ret;
+	}
+
 	bool can_recycle() const
 	{
 		return !should_destroy_on_consume;
+	}
+
+	void wait_external()
+	{
+		VK_ASSERT(semaphore);
+		VK_ASSERT(signalled);
+		signalled = false;
 	}
 
 	void signal_external()
@@ -78,10 +102,46 @@ public:
 		should_destroy_on_consume = true;
 	}
 
+	void signal_pending_wait()
+	{
+		pending = true;
+	}
+
+	bool is_pending_wait() const
+	{
+		return pending;
+	}
+
+	SemaphoreHolder &operator=(SemaphoreHolder &&other) noexcept;
+
 private:
+	friend class Util::ObjectPool<SemaphoreHolder>;
+	SemaphoreHolder(Device *device_, VkSemaphore semaphore_, bool signalled_)
+		: device(device_)
+		, semaphore(semaphore_)
+		, timeline(0)
+		, signalled(signalled_)
+	{
+	}
+
+	SemaphoreHolder(Device *device_, uint64_t timeline_, VkSemaphore semaphore_)
+		: device(device_), semaphore(semaphore_), timeline(timeline_)
+	{
+		VK_ASSERT(timeline > 0);
+	}
+
+	explicit SemaphoreHolder(Device *device_)
+		: device(device_)
+	{
+	}
+
+	void recycle_semaphore();
+
 	Device *device;
-	VkSemaphore semaphore;
+	VkSemaphore semaphore = VK_NULL_HANDLE;
+	uint64_t timeline = 0;
 	bool signalled = true;
+	bool pending = false;
 	bool should_destroy_on_consume = false;
 };
 

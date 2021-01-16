@@ -1,48 +1,61 @@
 #ifndef LIGHTING_DATA_H_
 #define LIGHTING_DATA_H_
 
-#ifdef ENVIRONMENT
-layout(set = 0, binding = 1, std140) uniform EnvironmentData
+#include "../inc/global_bindings.h"
+
+struct EnvironmentParameters
 {
 	float intensity;
 	float mipscale;
-} environment;
-#endif
+};
 
-#ifdef FOG
-layout(set = 0, binding = 2, std140) uniform FogData
+struct FogParameters
 {
 	vec3 color;
 	float falloff;
-} fog;
-#endif
+};
 
-#ifdef SHADOWS
-layout(set = 0, binding = 3, std140) uniform ShadowData
+struct VolumetricFogParameters
 {
-	mat4 near;
-	mat4 far;
-	float inv_cutoff_distance;
-} shadow;
-#endif
+	float slice_z_log2_scale;
+};
 
-layout(set = 0, binding = 4, std140) uniform DirectionalLight
+#define SHADOW_NUM_CASCADES 4
+#define SHADOW_TRANSFORMS shadow.transforms
+#define SHADOW_CASCADE_LOG_BIAS shadow.cascade_log_bias
+
+struct ShadowParameters
+{
+	mat4 transforms[SHADOW_NUM_CASCADES];
+	float cascade_log_bias;
+};
+
+struct DirectionalParameters
 {
 	vec3 color;
 	vec3 direction;
-} directional;
+};
 
-#ifdef REFRACTION
-layout(set = 0, binding = 5, std140) uniform RefractionData
+struct RefractionParameters
 {
 	vec3 falloff;
-} refraction;
-#endif
+};
 
-layout(set = 0, binding = 6, std140) uniform ResolutionData
+struct ResolutionParameters
 {
 	vec2 resolution;
 	vec2 inv_resolution;
-} resolution;
+};
+
+layout(set = 0, binding = BINDING_GLOBAL_RENDER_PARAMETERS, std140) uniform LightingParameters
+{
+	FogParameters fog;
+	EnvironmentParameters environment;
+	ShadowParameters shadow;
+	VolumetricFogParameters volumetric_fog;
+	DirectionalParameters directional;
+	RefractionParameters refraction;
+	ResolutionParameters resolution;
+};
 
 #endif

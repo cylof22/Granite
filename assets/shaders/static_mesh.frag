@@ -1,7 +1,30 @@
 #version 450
-precision mediump float;
+precision highp float;
+precision highp int;
 
-layout(location = 0) in mediump vec3 vEyeVec;
+#ifdef ALPHA_TEST_DISABLE
+#undef ALPHA_TEST
+#endif
+
+#if defined(RENDERER_FORWARD)
+#include "inc/subgroup_extensions.h"
+#endif
+
+#if defined(ALPHA_TEST)
+#include "inc/subgroup_discard.h"
+#else
+#include "inc/helper_invocation.h"
+#endif
+
+#if defined(VARIANT_BIT_0) && VARIANT_BIT_0 && defined(HAVE_BASECOLORMAP) && HAVE_BASECOLORMAP
+#define BANDLIMITED_PIXEL
+#include "inc/bandlimited_pixel_filter.h"
+const int bandlimited_pixel_lod = 0;
+#endif
+
+#include "inc/two_component_normal.h"
+
+layout(location = 0) in highp vec3 vPos;
 
 #if HAVE_UV
 layout(location = 1) in highp vec2 vUV;
@@ -20,23 +43,23 @@ layout(location = 4) in mediump vec4 vColor;
 #endif
 
 #if defined(HAVE_BASECOLORMAP) && HAVE_BASECOLORMAP
-layout(set = 2, binding = 0) uniform sampler2D uBaseColormap;
+layout(set = 2, binding = 0) uniform mediump sampler2D uBaseColormap;
 #endif
 
 #if defined(HAVE_NORMALMAP) && HAVE_NORMALMAP
-layout(set = 2, binding = 1) uniform sampler2D uNormalmap;
+layout(set = 2, binding = 1) uniform mediump sampler2D uNormalmap;
 #endif
 
 #if defined(HAVE_METALLICROUGHNESSMAP) && HAVE_METALLICROUGHNESSMAP
-layout(set = 2, binding = 2) uniform sampler2D uMetallicRoughnessmap;
+layout(set = 2, binding = 2) uniform mediump sampler2D uMetallicRoughnessmap;
 #endif
 
 #if defined(HAVE_OCCLUSIONMAP) && HAVE_OCCLUSIONMAP
-layout(set = 2, binding = 3) uniform sampler2D uOcclusionMap;
+layout(set = 2, binding = 3) uniform mediump sampler2D uOcclusionMap;
 #endif
 
 #if defined(HAVE_EMISSIVEMAP) && HAVE_EMISSIVEMAP
-layout(set = 2, binding = 4) uniform sampler2D uEmissiveMap;
+layout(set = 2, binding = 4) uniform mediump sampler2D uEmissiveMap;
 #endif
 
 layout(std430, push_constant) uniform Constants
@@ -45,93 +68,103 @@ layout(std430, push_constant) uniform Constants
     vec4 emissive;
     float roughness;
     float metallic;
-    float lod_bias;
     float normal_scale;
 } registers;
 
 #include "inc/render_target.h"
 
-#if defined(ALPHA_TEST) && !defined(ALPHA_TEST_ALPHA_TO_COVERAGE)
-#define NEED_GRADIENTS
-#endif
-
 void main()
 {
-#ifdef NEED_GRADIENTS
-    vec2 gradX = dFdx(vUV);
-    vec2 gradY = dFdy(vUV);
+#if defined(BANDLIMITED_PIXEL)
+    vec2 size = vec2(textureSize(uBaseColormap, bandlimited_pixel_lod));
+    BandlimitedPixelInfo info = compute_pixel_weights(vUV, size, 1.0 / size, 1.0);
 #endif
 
 #if defined(HAVE_BASECOLORMAP) && HAVE_BASECOLORMAP
-    #ifdef NEED_GRADIENTS
-        vec4 base_color = textureGrad(uBaseColormap, vUV, gradX, gradY) * registers.base_color;
+    #if defined(BANDLIMITED_PIXEL)
+        mediump vec4 base_color = sample_bandlimited_pixel(uBaseColormap, vUV, info, float(bandlimited_pixel_lod));
     #else
-        vec4 base_color = texture(uBaseColormap, vUV, registers.lod_bias) * registers.base_color;
+        mediump vec4 base_color = texture(uBaseColormap, vUV) * registers.base_color;
     #endif
 #else
-    vec4 base_color = registers.base_color;
+    mediump vec4 base_color = registers.base_color;
+#endif
+
+#if defined(ALPHA_TEST)
+    bool should_discard = is_helper_invocation() ||
+    #ifdef ALPHA_TEST_ALPHA_TO_COVERAGE
+        (base_color.a == 0.0);
+    #else
+        (base_color.a < 0.5);
+    #endif
+    // If all threads in a quad can discard, just kill the quad early, since we won't need derivatives.
+    quad_discard_early(should_discard);
 #endif
 
 #if HAVE_VERTEX_COLOR
     base_color *= vColor;
 #endif
 
-    // Ideally we want to discard ASAP, so we need to take explicit gradients first.
-#if defined(ALPHA_TEST) && !defined(ALPHA_TEST_ALPHA_TO_COVERAGE)
-    if (base_color.a < 0.5)
-        discard;
-#endif
-
 #if defined(HAVE_NORMAL) && HAVE_NORMAL
-    vec3 normal = normalize(vNormal);
+    mediump vec3 normal = normalize(vNormal);
     #if defined(HAVE_NORMALMAP) && HAVE_NORMALMAP
-        vec3 tangent = normalize(vTangent.xyz);
-        vec3 binormal = cross(normal, tangent) * vTangent.w;
-        #ifdef NEED_GRADIENTS
-            vec3 tangent_space = textureGrad(uNormalmap, vUV, gradX, gradY).xyz * 2.0 - 1.0;
+        mediump vec3 tangent = normalize(vTangent.xyz);
+        mediump vec3 binormal = cross(normal, tangent) * vTangent.w;
+        #if 0 && defined(BANDLIMITED_PIXEL)
+            mediump vec2 tangent_space = sample_bandlimited_pixel(uNormalmap, vUV, info, float(bandlimited_pixel_lod)).xy * 2.0 - 1.0;
         #else
-            vec3 tangent_space = texture(uNormalmap, vUV, registers.lod_bias).xyz * 2.0 - 1.0;
+            mediump vec2 tangent_space = texture(uNormalmap, vUV).xy * 2.0 - 1.0;
         #endif
-        tangent_space.xy *= registers.normal_scale;
-        normal = normalize(mat3(tangent, binormal, normal) * tangent_space);
+
+        // For 2-component compressed textures.
+        tangent_space *= registers.normal_scale;
+        normal = normalize(mat3(tangent, binormal, normal) * two_component_normal(tangent_space));
     #endif
     if (!gl_FrontFacing)
         normal = -normal;
+#else
+    const vec3 normal = vec3(0.0, 1.0, 0.0);
 #endif
 
 #if defined(HAVE_METALLICROUGHNESSMAP) && HAVE_METALLICROUGHNESSMAP
-    #ifdef NEED_GRADIENTS
-        vec2 mr = textureGrad(uMetallicRoughnessmap, vUV, gradX, gradY).bg;
+    #if 0 && defined(BANDLIMITED_PIXEL)
+        mediump vec2 mr = sample_bandlimited_pixel(uMetallicRoughnessmap, vUV, info, float(bandlimited_pixel_lod)).bg;
     #else
-        vec2 mr = texture(uMetallicRoughnessmap, vUV, registers.lod_bias).bg;
+        mediump vec2 mr = texture(uMetallicRoughnessmap, vUV).bg;
     #endif
-    float metallic = mr.x * registers.metallic;
-    float roughness = mr.y * registers.roughness;
+    mediump float metallic = mr.x * registers.metallic;
+    mediump float roughness = mr.y * registers.roughness;
 #else
-    float metallic = registers.metallic;
-    float roughness = registers.roughness;
+    mediump float metallic = registers.metallic;
+    mediump float roughness = registers.roughness;
 #endif
 
 #if defined(HAVE_OCCLUSIONMAP) && HAVE_OCCLUSIONMAP
-    #ifdef NEED_GRADIENTS
-        float ambient = texture(uOcclusionMap, vUV, gradX, gradY).x;
+    #if 0 && defined(BANDLIMITED_PIXEL)
+        mediump float ambient = sample_bandlimited_pixel(uOcclusionMap, vUV, info, float(bandlimited_pixel_lod)).x;
     #else
-        float ambient = texture(uOcclusionMap, vUV, registers.lod_bias).x;
+        mediump float ambient = texture(uOcclusionMap, vUV).x;
     #endif
 #else
-    const float ambient = 1.0;
+    const mediump float ambient = 1.0;
 #endif
 
 #if defined(HAVE_EMISSIVEMAP) && HAVE_EMISSIVEMAP
-    #ifdef NEED_GRADIENTS
-        vec3 emissive = texture(uEmissiveMap, vUV, gradX, gradY).rgb;
+    #if defined(BANDLIMITED_PIXEL)
+        mediump vec3 emissive = sample_bandlimited_pixel(uEmissiveMap, vUV, info, float(bandlimited_pixel_lod)).rgb;
     #else
-        vec3 emissive = texture(uEmissiveMap, vUV, registers.lod_bias).rgb;
+        mediump vec3 emissive = texture(uEmissiveMap, vUV).rgb;
     #endif
     emissive *= registers.emissive.rgb;
 #else
-    vec3 emissive = registers.emissive.rgb;
+    mediump vec3 emissive = registers.emissive.rgb;
 #endif
 
-    emit_render_target(emissive, base_color, normal, metallic, roughness, ambient, vEyeVec);
+    // Ideally we want to discard ASAP, but discarding early make derivatives undefined.
+    // Ideally, we'd ballot early.
+#if defined(ALPHA_TEST)
+    quad_discard_late(should_discard);
+#endif
+
+    emit_render_target(emissive, base_color, normal, metallic, roughness, ambient, vPos);
 }

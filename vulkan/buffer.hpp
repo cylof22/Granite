@@ -1,4 +1,4 @@
-/* Copyright (c) 2017 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2020 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -23,7 +23,7 @@
 #pragma once
 
 #include "cookie.hpp"
-#include "intrusive.hpp"
+#include "vulkan_common.hpp"
 #include "memory_allocator.hpp"
 
 namespace Vulkan
@@ -72,21 +72,45 @@ enum class BufferDomain
 {
 	Device, // Device local. Probably not visible from CPU.
 	LinkedDeviceHost, // On desktop, directly mapped VRAM over PCI.
+	LinkedDeviceHostPreferDevice, // Prefer device local of host visible.
 	Host, // Host-only, needs to be synced to GPU. Might be device local as well on iGPUs.
-	CachedHost // Host-only, used for readbacks.
+	CachedHost,
+	CachedCoherentHostPreferCoherent, // Aim for both cached and coherent, but prefer COHERENT
+	CachedCoherentHostPreferCached, // Aim for both cached and coherent, but prefer CACHED
 };
+
+enum BufferMiscFlagBits
+{
+	BUFFER_MISC_ZERO_INITIALIZE_BIT = 1 << 0
+};
+
+using BufferMiscFlags = uint32_t;
 
 struct BufferCreateInfo
 {
-	BufferDomain domain;
-	VkDeviceSize size;
-	VkBufferUsageFlags usage;
+	BufferDomain domain = BufferDomain::Device;
+	VkDeviceSize size = 0;
+	VkBufferUsageFlags usage = 0;
+	BufferMiscFlags misc = 0;
 };
 
-class Buffer : public Util::IntrusivePtrEnabled<Buffer>, public Cookie
+class Buffer;
+struct BufferDeleter
+{
+	void operator()(Buffer *buffer);
+};
+
+class BufferView;
+struct BufferViewDeleter
+{
+	void operator()(BufferView *view);
+};
+
+class Buffer : public Util::IntrusivePtrEnabled<Buffer, BufferDeleter, HandleCounter>,
+               public Cookie, public InternalSyncEnabled
 {
 public:
-	Buffer(Device *device, VkBuffer buffer, const DeviceAllocation &alloc, const BufferCreateInfo &info);
+	friend struct BufferDeleter;
 	~Buffer();
 
 	VkBuffer get_buffer() const
@@ -110,6 +134,9 @@ public:
 	}
 
 private:
+	friend class Util::ObjectPool<Buffer>;
+	Buffer(Device *device, VkBuffer buffer, const DeviceAllocation &alloc, const BufferCreateInfo &info);
+
 	Device *device;
 	VkBuffer buffer;
 	DeviceAllocation alloc;
@@ -125,10 +152,11 @@ struct BufferViewCreateInfo
 	VkDeviceSize range;
 };
 
-class BufferView : public Util::IntrusivePtrEnabled<BufferView>, public Cookie
+class BufferView : public Util::IntrusivePtrEnabled<BufferView, BufferViewDeleter, HandleCounter>,
+                   public Cookie, public InternalSyncEnabled
 {
 public:
-	BufferView(Device *device, VkBufferView view, const BufferViewCreateInfo &info);
+	friend struct BufferViewDeleter;
 	~BufferView();
 
 	VkBufferView get_view() const
@@ -147,6 +175,9 @@ public:
 	}
 
 private:
+	friend class Util::ObjectPool<BufferView>;
+	BufferView(Device *device, VkBufferView view, const BufferViewCreateInfo &info);
+
 	Device *device;
 	VkBufferView view;
 	BufferViewCreateInfo info;

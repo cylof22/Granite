@@ -6,31 +6,40 @@
 	url = git://github.com/google/shaderc.git
 [submodule "third_party/glslang"]
 	path = third_party/glslang
-	url = https://github.com/google/glslang.git
+	url = git://github.com/KhronosGroup/glslang.git
 [submodule "third_party/spirv-tools"]
 	path = third_party/spirv-tools
-	url = https://github.com/KhronosGroup/SPIRV-Tools
+	url = git://github.com/KhronosGroup/SPIRV-Tools
 [submodule "third_party/spirv-headers"]
 	path = third_party/spirv-headers
-	url = https://github.com/KhronosGroup/SPIRV-Headers
-[submodule "third_party/glm"]
-	path = third_party/glm
-	url = git://github.com/g-truc/glm
+	url = git://github.com/KhronosGroup/SPIRV-Headers
 [submodule "third_party/glfw"]
 	path = third_party/glfw
 	url = git://github.com/glfw/glfw
 [submodule "third_party/rapidjson"]
 	path = third_party/rapidjson
 	url = git://github.com/miloyip/rapidjson
-[submodule "third_party/gli"]
-	path = third_party/gli
-	url = git://github.com/g-truc/gli
 [submodule "third_party/stb/stb"]
 	path = third_party/stb/stb
 	url = git://github.com/nothings/stb
-[submodule "third_party/FastNoise"]
-	path = third_party/FastNoise
-	url = git://github.com/Auburns/FastNoise
+[submodule "third_party/astc-encoder"]
+	path = third_party/astc-encoder
+	url = git://github.com/Themaister/astc-encoder
+[submodule "third_party/fossilize"]
+	path = third_party/fossilize
+	url = git://github.com/ValveSoftware/Fossilize
+[submodule "third_party/volk"]
+	path = third_party/volk
+	url = git://github.com/zeux/volk
+[submodule "third_party/meshoptimizer"]
+	path = third_party/meshoptimizer
+	url = git://github.com/Themaister/meshoptimizer
 [submodule "third_party/muFFT"]
 	path = third_party/muFFT
 	url = git://github.com/Themaister/muFFT
+[submodule "third_party/oboe"]
+	path = third_party/oboe
+	url = git://github.com/google/oboe
+[submodule "third_party/khronos/vulkan-headers"]
+	path = third_party/khronos/vulkan-headers
+	url = git://github.com/KhronosGroup/Vulkan-Headers

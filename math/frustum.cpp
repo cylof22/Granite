@@ -1,4 +1,4 @@
-/* Copyright (c) 2017 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2020 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -25,7 +25,8 @@
 namespace Granite
 {
 
-bool Frustum::intersects(const AABB &aabb) const
+// For reference, should always use SIMD-version.
+bool Frustum::intersects_slow(const AABB &aabb) const
 {
 	for (auto &plane : planes)
 	{
@@ -46,7 +47,7 @@ bool Frustum::intersects(const AABB &aabb) const
 	return true;
 }
 
-bool Frustum::intersects_fast(const AABB &aabb) const
+bool Frustum::intersects_sphere(const AABB &aabb) const
 {
 	vec4 center(aabb.get_center(), 1.0f);
 	float radius = aabb.get_radius();
@@ -91,15 +92,15 @@ vec4 Frustum::get_bounding_sphere(const mat4 &inv_projection, const mat4 &inv_vi
 	// N + x^2 == F + C^2 - 2Cx + x^2.
 	// x = (F - N + C^2) / 2C
 	float center_distance = (F - N + C * C) / (2.0f * C);
-	float radius = sqrt(center_distance * center_distance + N);
+	float radius = muglm::sqrt(center_distance * center_distance + N);
 	vec3 view_space_center = center_near + center_distance * normalize(center_far - center_near);
 	vec3 center = (inv_view * vec4(view_space_center, 1.0f)).xyz();
 	return vec4(center, radius);
 }
 
-void Frustum::build_planes(const mat4 &inv_view_projection)
+void Frustum::build_planes(const mat4 &inv_view_projection_)
 {
-	this->inv_view_projection = inv_view_projection;
+	inv_view_projection = inv_view_projection_;
 	static const vec4 tln(-1.0f, -1.0f, 0.0f, 1.0f);
 	static const vec4 tlf(-1.0f, -1.0f, 1.0f, 1.0f);
 	static const vec4 bln(-1.0f, +1.0f, 0.0f, 1.0f);
@@ -108,6 +109,7 @@ void Frustum::build_planes(const mat4 &inv_view_projection)
 	static const vec4 trf(+1.0f, -1.0f, 1.0f, 1.0f);
 	static const vec4 brn(+1.0f, +1.0f, 0.0f, 1.0f);
 	static const vec4 brf(+1.0f, +1.0f, 1.0f, 1.0f);
+	static const vec4 c(0.0f, 0.0f, 0.5f, 1.0f);
 
 	const auto project = [](const vec4 &v) {
 		return v.xyz() / vec3(v.w);
@@ -120,6 +122,7 @@ void Frustum::build_planes(const mat4 &inv_view_projection)
 	vec3 TRF = project(inv_view_projection * trf);
 	vec3 BRN = project(inv_view_projection * brn);
 	vec3 BRF = project(inv_view_projection * brf);
+	vec4 center = inv_view_projection * c;
 
 	vec3 l = normalize(cross(BLF - BLN, TLN - BLN));
 	vec3 r = normalize(cross(TRF - TRN, BRN - TRN));
@@ -134,5 +137,10 @@ void Frustum::build_planes(const mat4 &inv_view_projection)
 	planes[3] = vec4(f, -dot(f, BRF));
 	planes[4] = vec4(t, -dot(t, TRN));
 	planes[5] = vec4(b, -dot(b, BRN));
+
+	// Winding order checks.
+	for (auto &p : planes)
+		if (dot(center, p) < 0.0f)
+			p = -p;
 }
 }

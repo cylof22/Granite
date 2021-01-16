@@ -1,4 +1,4 @@
-/* Copyright (c) 2017 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2020 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -23,8 +23,8 @@
 #pragma once
 
 #include "mesh.hpp"
-#include "vulkan_events.hpp"
-#include "importers.hpp"
+#include "application_wsi_events.hpp"
+#include "scene_formats.hpp"
 #include "render_components.hpp"
 #include "render_context.hpp"
 
@@ -34,11 +34,14 @@ class FrameTickEvent;
 class ImportedMesh : public StaticMesh, public EventHandler
 {
 public:
-	ImportedMesh(const Importer::Mesh &mesh, const Importer::MaterialInfo &info);
+	ImportedMesh(const SceneFormats::Mesh &mesh, const SceneFormats::MaterialInfo &info);
+
+	const SceneFormats::Mesh &get_mesh() const;
+	const SceneFormats::MaterialInfo &get_material_info() const;
 
 private:
-	Importer::Mesh mesh;
-	Importer::MaterialInfo info;
+	SceneFormats::Mesh mesh;
+	SceneFormats::MaterialInfo info;
 
 	void on_device_created(const Vulkan::DeviceCreatedEvent &event);
 	void on_device_destroyed(const Vulkan::DeviceCreatedEvent &event);
@@ -47,27 +50,92 @@ private:
 class ImportedSkinnedMesh : public SkinnedMesh, public EventHandler
 {
 public:
-	ImportedSkinnedMesh(const Importer::Mesh &mesh, const Importer::MaterialInfo &info);
+	ImportedSkinnedMesh(const SceneFormats::Mesh &mesh, const SceneFormats::MaterialInfo &info);
+
+	const SceneFormats::Mesh &get_mesh() const;
+	const SceneFormats::MaterialInfo &get_material_info() const;
 
 private:
-	Importer::Mesh mesh;
-	Importer::MaterialInfo info;
+	SceneFormats::Mesh mesh;
+	SceneFormats::MaterialInfo info;
 
 	void on_device_created(const Vulkan::DeviceCreatedEvent &event);
 	void on_device_destroyed(const Vulkan::DeviceCreatedEvent &event);
 };
+
+template <typename StaticMesh = ImportedMesh, typename SkinnedMesh = ImportedSkinnedMesh>
+inline AbstractRenderableHandle create_imported_mesh(const SceneFormats::Mesh &mesh,
+                                                     const SceneFormats::MaterialInfo *materials)
+{
+	SceneFormats::MaterialInfo default_material;
+	default_material.uniform_base_color = vec4(0.3f, 1.0f, 0.3f, 1.0f);
+	default_material.uniform_metallic = 0.0f;
+	default_material.uniform_roughness = 1.0f;
+	AbstractRenderableHandle renderable;
+
+	bool skinned = mesh.attribute_layout[Util::ecast(MeshAttribute::BoneIndex)].format != VK_FORMAT_UNDEFINED;
+	if (skinned)
+	{
+		if (mesh.has_material)
+		{
+			renderable = Util::make_handle<SkinnedMesh>(mesh,
+			                                            materials[mesh.material_index]);
+		}
+		else
+			renderable = Util::make_handle<SkinnedMesh>(mesh, default_material);
+	}
+	else
+	{
+		if (mesh.has_material)
+		{
+			renderable = Util::make_handle<StaticMesh>(mesh,
+			                                           materials[mesh.material_index]);
+		}
+		else
+			renderable = Util::make_handle<StaticMesh>(mesh, default_material);
+	}
+	return renderable;
+}
 
 class CubeMesh : public StaticMesh, public EventHandler
 {
 public:
 	CubeMesh();
+	static SceneFormats::Mesh build_plain_mesh();
 
 private:
 	void on_device_created(const Vulkan::DeviceCreatedEvent &event);
 	void on_device_destroyed(const Vulkan::DeviceCreatedEvent &event);
 };
 
-class SphereMesh : public StaticMesh, public EventHandler
+struct GeneratedMeshData
+{
+	struct Attribute
+	{
+		vec3 normal;
+		vec2 uv;
+	};
+
+	std::vector<vec3> positions;
+	std::vector<Attribute> attributes;
+	std::vector<uint16_t> indices;
+
+	VkPrimitiveTopology topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+	bool primitive_restart = false;
+	bool has_uvs = false;
+};
+GeneratedMeshData create_sphere_mesh(unsigned density);
+GeneratedMeshData create_cone_mesh(unsigned density, float height, float radius);
+GeneratedMeshData create_cylinder_mesh(unsigned density, float height, float radius);
+GeneratedMeshData create_capsule_mesh(unsigned density, float height, float radius);
+
+class GeneratedMesh : public StaticMesh
+{
+protected:
+	void setup_from_generated_mesh(Vulkan::Device &device, const GeneratedMeshData &generated);
+};
+
+class SphereMesh : public GeneratedMesh, public EventHandler
 {
 public:
 	SphereMesh(unsigned density = 16);
@@ -78,39 +146,71 @@ private:
 	void on_device_destroyed(const Vulkan::DeviceCreatedEvent &event);
 };
 
+class ConeMesh : public GeneratedMesh, public EventHandler
+{
+public:
+	ConeMesh(unsigned density, float height, float radius);
+
+private:
+	unsigned density;
+	float height;
+	float radius;
+	void on_device_created(const Vulkan::DeviceCreatedEvent &event);
+	void on_device_destroyed(const Vulkan::DeviceCreatedEvent &event);
+};
+
+class CylinderMesh : public GeneratedMesh, public EventHandler
+{
+public:
+	CylinderMesh(unsigned density, float height, float radius);
+
+private:
+	unsigned density;
+	float height;
+	float radius;
+	void on_device_created(const Vulkan::DeviceCreatedEvent &event);
+	void on_device_destroyed(const Vulkan::DeviceCreatedEvent &event);
+};
+
+class CapsuleMesh : public GeneratedMesh, public EventHandler
+{
+public:
+	CapsuleMesh(unsigned density, float height, float radius);
+
+private:
+	unsigned density;
+	float height;
+	float radius;
+	void on_device_created(const Vulkan::DeviceCreatedEvent &event);
+	void on_device_destroyed(const Vulkan::DeviceCreatedEvent &event);
+};
+
 class Skybox : public AbstractRenderable, public EventHandler
 {
 public:
 	Skybox(std::string bg_path = "", bool latlon = false);
+	void set_image(Vulkan::ImageHandle skybox);
+	void set_image(Vulkan::Texture *skybox);
 
-	void get_render_info(const RenderContext &context, const CachedSpatialTransformComponent *transform,
+	void get_render_info(const RenderContext &context, const RenderInfoComponent *transform,
 	                     RenderQueue &queue) const override;
 
-	void set_color_mod(const vec3 &color)
+	void set_color_mod(const vec3 &color_)
 	{
-		this->color = color;
+		color = color_;
 	}
-
-	void enable_irradiance(const std::string &path);
-	void enable_reflection(const std::string &path);
 
 private:
 	Vulkan::Device *device = nullptr;
 	std::string bg_path;
-	std::string irradiance_path;
-	std::string reflection_path;
 	vec3 color = vec3(1.0f);
 	Vulkan::Texture *texture = nullptr;
-	Vulkan::Texture *irradiance_texture = nullptr;
-	Vulkan::Texture *reflection_texture = nullptr;
+	Vulkan::ImageHandle image;
 
 	void on_device_created(const Vulkan::DeviceCreatedEvent &event);
 	void on_device_destroyed(const Vulkan::DeviceCreatedEvent &event);
 
 	bool is_latlon = true;
-
-	void update_irradiance();
-	void update_reflection();
 };
 
 class SkyCylinder : public AbstractRenderable, public EventHandler
@@ -118,17 +218,17 @@ class SkyCylinder : public AbstractRenderable, public EventHandler
 public:
 	SkyCylinder(std::string bg_path);
 
-	void get_render_info(const RenderContext &context, const CachedSpatialTransformComponent *transform,
+	void get_render_info(const RenderContext &context, const RenderInfoComponent *transform,
 	                     RenderQueue &queue) const override;
 
-	void set_color_mod(const vec3 &color)
+	void set_color_mod(const vec3 &color_)
 	{
-		this->color = color;
+		color = color_;
 	}
 
-	void set_xz_scale(float scale)
+	void set_xz_scale(float scale_)
 	{
-		this->scale = scale;
+		scale = scale_;
 	}
 
 private:
@@ -174,7 +274,7 @@ public:
 		return vec4(normal, -dot(normal, position));
 	}
 
-	void get_render_info(const RenderContext &context, const CachedSpatialTransformComponent *transform,
+	void get_render_info(const RenderContext &context, const RenderInfoComponent *transform,
 	                     RenderQueue &queue) const override;
 
 	void set_plane(const vec3 &position, const vec3 &normal, const vec3 &up, float extent_up, float extent_across);
@@ -190,6 +290,7 @@ private:
 	const Vulkan::ImageView *reflection = nullptr;
 	const Vulkan::ImageView *refraction = nullptr;
 	Vulkan::Texture *normalmap = nullptr;
+	RenderQueue internal_queue;
 
 	vec3 position;
 	vec3 normal;
@@ -211,7 +312,7 @@ private:
 	std::string reflection_name;
 	std::string refraction_name;
 
-	Renderer *renderer = nullptr;
+	const RendererSuite *renderer_suite = nullptr;
 	const RenderContext *base_context = nullptr;
 	RenderContext context;
 	Scene *scene = nullptr;
@@ -228,12 +329,11 @@ private:
 	void add_render_pass(RenderGraph &graph, Type type);
 
 	void add_render_passes(RenderGraph &graph) override;
-	void set_base_renderer(Renderer *renderer) override;
+	void set_base_renderer(const RendererSuite *suite) override;
 	void set_base_render_context(const RenderContext *context) override;
 	void setup_render_pass_dependencies(RenderGraph &graph, RenderPass &target) override;
 	void setup_render_pass_resources(RenderGraph &graph) override;
 	void set_scene(Scene *scene) override;
-	RendererType get_renderer_type() override;
 
 	void render_main_pass(Vulkan::CommandBuffer &cmd, const mat4 &proj, const mat4 &view);
 };

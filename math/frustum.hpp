@@ -1,4 +1,4 @@
-/* Copyright (c) 2017 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2020 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -31,12 +31,17 @@ class Frustum
 {
 public:
 	void build_planes(const mat4& inv_view_projection);
-	bool intersects(const AABB &aabb) const;
-	bool intersects_fast(const AABB &aabb) const;
+	bool intersects_sphere(const AABB &aabb) const;
+	bool intersects_slow(const AABB &aabb) const;
 
 	vec3 get_coord(float dx, float dy, float dz) const;
 
 	static vec4 get_bounding_sphere(const mat4 &inv_projection, const mat4 &inv_view);
+
+	const vec4 *get_planes() const
+	{
+		return planes;
+	}
 
 private:
 	vec4 planes[6];

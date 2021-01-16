@@ -1,4 +1,4 @@
-/* Copyright (c) 2017 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2020 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -43,16 +43,20 @@ quat rotate_vector(vec3 from, vec3 to);
 
 quat look_at(vec3 direction, vec3 up);
 
+quat look_at_arbitrary_up(vec3 direction);
+
 quat rotate_vector_axis(vec3 from, vec3 to, vec3 axis);
 
 mat4 projection(float fovy, float aspect, float znear, float zfar);
 
 mat4 ortho(const AABB &aabb);
 
+void compute_cube_render_transform(vec3 center, unsigned face, mat4 &projection, mat4 &view, float znear, float zfar);
+
 struct LinearSampler
 {
 	std::vector<vec3> values;
-	vec3 sample(unsigned index, float l) const;
+	vec3 sample(unsigned index, float l, float dt) const;
 };
 
 struct CubicSampler
@@ -64,6 +68,6 @@ struct CubicSampler
 struct SlerpSampler
 {
 	std::vector<quat> values;
-	quat sample(unsigned index, float l) const;
+	quat sample(unsigned index, float l, float dt) const;
 };
 }

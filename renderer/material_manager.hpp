@@ -1,4 +1,4 @@
-/* Copyright (c) 2017 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2020 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -26,8 +26,8 @@
 #include "volatile_source.hpp"
 #include "device.hpp"
 #include "event.hpp"
-#include "importers.hpp"
-#include "vulkan_events.hpp"
+#include "scene_formats.hpp"
+#include "application_wsi_events.hpp"
 
 namespace Granite
 {
@@ -35,8 +35,8 @@ class MaterialFile : public Material, public Util::VolatileSource<MaterialFile>,
 {
 public:
 	MaterialFile(const std::string &path);
-	MaterialFile(const Importer::MaterialInfo &info);
-	void update(const void *data, size_t size);
+	MaterialFile(const SceneFormats::MaterialInfo &info);
+	void update(std::unique_ptr<File> file);
 
 private:
 	Vulkan::Device *device = nullptr;

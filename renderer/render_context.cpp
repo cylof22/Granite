@@ -1,4 +1,4 @@
-/* Copyright (c) 2017 Hans-Kristian Arntzen
+/* Copyright (c) 2017-2020 Hans-Kristian Arntzen
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -21,37 +21,35 @@
  */
 
 #include "render_context.hpp"
+#include "muglm/matrix_helper.hpp"
 
 using namespace std;
 using namespace Vulkan;
 
 namespace Granite
 {
-RenderContext::RenderContext()
+void RenderContext::set_camera(const Camera &camera_)
 {
-	EVENT_MANAGER_REGISTER_LATCH(RenderContext, on_device_created, on_device_destroyed, DeviceCreatedEvent);
+	set_camera(camera_.get_projection(), camera_.get_view());
 }
 
-void RenderContext::on_device_created(const DeviceCreatedEvent &e)
+void RenderContext::set_shadow_cascades(const mat4 cascades[NumShadowCascades])
 {
-	device = &e.get_device();
+	for (unsigned i = 0; i < NumShadowCascades; i++)
+		camera.multiview_view_projection[i] = cascades[i];
 }
 
-void RenderContext::on_device_destroyed(const DeviceCreatedEvent &)
+void RenderContext::set_device(Device *device_)
 {
-}
-
-void RenderContext::set_camera(const Camera &camera)
-{
-	set_camera(camera.get_projection(), camera.get_view());
+	device = device_;
 }
 
 void RenderContext::set_camera(const mat4 &projection, const mat4 &view)
 {
 	camera.projection = projection;
 	camera.view = view;
-	camera.view_projection = projection * view;
-	camera.inv_projection = inverse(projection);
+	camera.view_projection = camera.projection * view;
+	camera.inv_projection = inverse(camera.projection);
 	camera.inv_view = inverse(view);
 	camera.inv_view_projection = inverse(camera.view_projection);
 
@@ -59,7 +57,8 @@ void RenderContext::set_camera(const mat4 &projection, const mat4 &view)
 	local_view[3].x = 0.0f;
 	local_view[3].y = 0.0f;
 	local_view[3].z = 0.0f;
-	camera.inv_local_view_projection = inverse(projection * local_view);
+	camera.local_view_projection = camera.projection * local_view;
+	camera.inv_local_view_projection = inverse(camera.local_view_projection);
 
 	frustum.build_planes(camera.inv_view_projection);
 
